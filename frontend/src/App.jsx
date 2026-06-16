@@ -15,14 +15,12 @@ export default function App() {
   const [sort, setSort]               = useState({ col: null, dir: "asc" });
   const [filters, setFilters]         = useState({});
 
-  // All mutable fetch state lives in refs — never causes re-renders
   const cursorRef     = useRef(null);
   const colsLockedRef = useRef(false);
   const doneRef       = useRef(false);
   const loadingRef    = useRef(false);
   const selectedRef   = useRef("");
 
-  // Load collections on mount
   useEffect(() => {
     fetch(`${API}/api/collections`)
       .then(r => r.json())
@@ -30,7 +28,6 @@ export default function App() {
       .catch(() => setError("Cannot reach backend. Is Go server running on :8080?"));
   }, []);
 
-  // ── Single fetch function — reads from refs, writes to refs + state ──
   async function fetchBatch() {
     if (loadingRef.current || doneRef.current) return;
     const col = selectedRef.current;
@@ -46,8 +43,6 @@ export default function App() {
 
       const res  = await fetch(url);
       const data = await res.json();
-
-      // Guard: if collection changed while fetching, discard
       if (selectedRef.current !== col) return;
 
       const newItems = data.items || [];
@@ -67,7 +62,6 @@ export default function App() {
         doneRef.current = true;
         setDone(true);
       } else {
-        // Schedule next batch — plain timeout, no state involved
         setTimeout(fetchBatch, 250);
       }
     } catch (e) {
@@ -78,11 +72,8 @@ export default function App() {
     }
   }
 
-  // ── Reset + kick first fetch when collection changes ──
   useEffect(() => {
     if (!selected) return;
-
-    // Reset all state
     setRows([]);
     setColumns([]);
     setFilters({});
@@ -90,19 +81,15 @@ export default function App() {
     setError("");
     setDone(false);
     setLoading(false);
-
-    // Reset all refs
     cursorRef.current     = null;
     colsLockedRef.current = false;
     doneRef.current       = false;
     loadingRef.current    = false;
     selectedRef.current   = selected;
 
-    // Kick first fetch after reset settles
     setTimeout(fetchBatch, 50);
   }, [selected]);
 
-  // ── Sort ──
   const handleSort = (col) => {
     setSort(prev => ({
       col,
@@ -110,12 +97,9 @@ export default function App() {
     }));
   };
 
-  // ── Filter ──
   const handleFilter = (col, val) => {
     setFilters(prev => ({ ...prev, [col]: val }));
   };
-
-  // ── Derived rows ──
   const displayRows = (() => {
     let result = [...rows];
     Object.entries(filters).forEach(([col, val]) => {

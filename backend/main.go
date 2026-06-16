@@ -12,15 +12,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
-
 const (
 	MONGO_URI = "mongodb://localhost:27017"
 	DB_NAME   = "graphql_demo"
 	LIMIT     = 10
 )
-
 var client *mongo.Client
-
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -44,8 +41,6 @@ func main() {
 	log.Println("Server running at http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
-
-// GET /api/collections — returns list of all collection names
 func handleCollections(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -62,8 +57,6 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/items?collection=<name>&cursor=<lastId>
-// Returns 10 documents, dynamic fields, next cursor
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -109,8 +102,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		rawDocs = rawDocs[:LIMIT]
 	}
 
-	// Convert bson.M to JSON-serializable map
-	// ObjectIDs become hex strings, other types pass through
 	items := make([]map[string]interface{}, 0, len(rawDocs))
 	for _, doc := range rawDocs {
 		items = append(items, bsonToMap(doc))
@@ -123,7 +114,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Collect all unique keys across returned docs (for dynamic columns)
 	keySet := map[string]bool{}
 	for _, doc := range items {
 		for k := range doc {
@@ -131,7 +121,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	keys := make([]string, 0, len(keySet))
-	// Put _id first
 	if keySet["_id"] {
 		keys = append(keys, "_id")
 		delete(keySet, "_id")
@@ -149,8 +138,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// bsonToMap recursively converts bson.M to plain map[string]interface{}
-// so ObjectIDs, timestamps etc. serialize correctly
 func bsonToMap(doc bson.M) map[string]interface{} {
 	out := make(map[string]interface{}, len(doc))
 	for k, v := range doc {

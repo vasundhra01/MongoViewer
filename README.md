@@ -109,12 +109,11 @@ Instead of `skip(n).limit(10)` (slow on large collections), the app uses **keyse
  
 ## How dynamic columns work
  
-MongoDB is schema-less — different documents can have different fields. The backend scans all returned documents, collects every unique key, and sends them as a `keys` array alongside the data. The frontend locks the column list after the very first batch and never changes it, so the table header stays stable as more rows load.
+MongoDB is schemaless so different documents can have different fields. The backend scans all returned documents, collects every unique key, and sends them as a `keys` array alongside the data. The frontend locks the column list after the very first batch and never changes it, so the table header stays stable as more rows load.
  
 ---
  
 ## How the fetch loop works
  
-Fetching is driven by a plain recursive async function — not by `useEffect`. After each batch completes, if `hasMore` is true, `setTimeout(fetchBatch, 250)` schedules the next one. This avoids React's stale closure and re-render problems that arise when using `useEffect` as a fetch loop driver.
+Fetching is driven by a plain recursive async function and  not by `useEffect`. After each batch completes, if `hasMore` is true, `setTimeout(fetchBatch, 250)` schedules the next one. This avoids React's stale closure and re-render problems that arise when using `useEffect` as a fetch loop driver.
  
----

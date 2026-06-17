@@ -1,31 +1,31 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
+	"context"	//timeout and cancellation
+	"encoding/json"	// converst go structs to json format
 	"log"
-	"net/http"
-	"time"
+	"net/http" //This will create the web server
+	"time"	// for timeout
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson"		//bson is Mongodb doc format
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 const (
-	MONGO_URI = "mongodb://localhost:27017"
-	DB_NAME   = "graphql_demo"
-	LIMIT     = 10
+	MONGO_URI = "mongodb://localhost:27017"	//change according to down device if difff
+	DB_NAME   = "graphql_demo"	//change to your database name
+	LIMIT     = 10	// i set the loading limit to 10 at a time. can be change
 )
-var client *mongo.Client
+var client *mongo.Client	// single mongo connection shared by all
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)	//timeout context
+	defer cancel()	// this context will expire auto after 10 sec. change acc to will
 
 	var err error
 	client, err = mongo.Connect(ctx, options.Client().ApplyURI(MONGO_URI))
 	if err != nil {
-		log.Fatal("MongoDB connect error:", err)
+		log.Fatal("MongoDB connect error:", err)	//connection error handler
 	}
 	defer client.Disconnect(context.Background())
 

@@ -1,24 +1,24 @@
-import { useState, useEffect, useRef } from "react";
-import * as XLSX from "xlsx";
+import { useState, useEffect, useRef } from "react";  //react hooks
+import * as XLSX from "xlsx";  //for excel
 
-const API = "http://localhost:8080";
-const CHUNK = 10;
+const API = "http://localhost:8080";  //my backend url
+const CHUNK = 10;  //limit. you canchange from here. each req fetches 10 rows. 
 
 export default function App() {
-  const [collections, setCollections] = useState([]);
-  const [selected, setSelected]       = useState("");
+  const [collections, setCollections] = useState([]);  // stores collection names
+  const [selected, setSelected]       = useState("");  // currently selected collection
   const [rows, setRows]               = useState([]);
-  const [columns, setColumns]         = useState([]);
+  const [columns, setColumns]         = useState([]);  // dynamic column list
   const [loading, setLoading]         = useState(false);
   const [done, setDone]               = useState(false);
   const [error, setError]             = useState("");
-  const [sort, setSort]               = useState({ col: null, dir: "asc" });
-  const [filters, setFilters]         = useState({});
+  const [sort, setSort]               = useState({ col: null, dir: "asc" });  //tracks current sorting
+  const [filters, setFilters]         = useState({});  //stores active filters
 
   const cursorRef     = useRef(null);
   const colsLockedRef = useRef(false);
-  const doneRef       = useRef(false);
-  const loadingRef    = useRef(false);
+  const doneRef       = useRef(false);  // to avoid fetching after last pagfe
+  const loadingRef    = useRef(false);  // to prevent duplicates. was failing for some collections. 
   const selectedRef   = useRef("");
 
   useEffect(() => {
@@ -29,8 +29,8 @@ export default function App() {
   }, []);
 
   async function fetchBatch() {
-    if (loadingRef.current || doneRef.current) return;
-    const col = selectedRef.current;
+    if (loadingRef.current || doneRef.current) return; // to avoid duplicate reqs
+    const col = selectedRef.current;  // gets active collection
     if (!col) return;
 
     loadingRef.current = true;
@@ -41,9 +41,9 @@ export default function App() {
         ? `${API}/api/items?collection=${col}&cursor=${cursorRef.current}`
         : `${API}/api/items?collection=${col}`;
 
-      const res  = await fetch(url);
+      const res  = await fetch(url);  // calls go backend
       const data = await res.json();
-      if (selectedRef.current !== col) return;
+      if (selectedRef.current !== col) return;  //protects against race condn
 
       const newItems = data.items || [];
       const more     = !!data.hasMore;
@@ -74,6 +74,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selected) return;
+    // reset ui state
     setRows([]);
     setColumns([]);
     setFilters({});
@@ -81,6 +82,7 @@ export default function App() {
     setError("");
     setDone(false);
     setLoading(false);
+    // start from first page
     cursorRef.current     = null;
     colsLockedRef.current = false;
     doneRef.current       = false;

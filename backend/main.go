@@ -83,7 +83,7 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	coll := client.Database(DB_NAME).Collection(collName)
 	opts := options.Find().
 		SetSkip(skip).
-		SetLimit(int64(LIMIT + 1)) // fetch 11 to detect hasMore
+		SetLimit(int64(LIMIT + 1)) // fetch 101 to detect hasMore
 
 	cur, err := coll.Find(ctx, bson.M{}, opts)
 	if err != nil {

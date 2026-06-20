@@ -14,8 +14,6 @@ export default function App() {
   const [error, setError]             = useState("");
   const [sort, setSort]               = useState({ col: null, dir: "asc" });
   const [filters, setFilters]         = useState({});
-
-  // All mutable fetch state lives in refs — never causes re-renders
   const skipRef       = useRef(0);
   const colsLockedRef = useRef(false);
   const doneRef       = useRef(false);
@@ -30,7 +28,6 @@ export default function App() {
       .catch(() => setError("Cannot reach backend. Is Go server running on :8080?"));
   }, []);
 
-  // ── Single fetch function — reads from refs, writes to refs + state ──
   async function fetchBatch(token) {
     // If a newer run has started (collection changed again), abandon this chain
     if (token !== runTokenRef.current) return;
@@ -53,7 +50,6 @@ export default function App() {
 
       const data = await res.json();
 
-      // Guard: stale chain (collection changed, or StrictMode double-run)
       if (token !== runTokenRef.current || selectedRef.current !== col) return;
 
       const newItems = data.items || [];
@@ -73,7 +69,6 @@ export default function App() {
         doneRef.current = true;
         setDone(true);
       } else {
-        // Schedule next batch — plain timeout, no state involved
         setTimeout(() => fetchBatch(token), 250);
       }
     } catch (e) {
@@ -85,18 +80,11 @@ export default function App() {
       }
     }
   }
-
-  // ── Reset + kick first fetch when collection changes ──
   useEffect(() => {
     if (!selected) return;
 
-    // Bump the run token — any in-flight fetchBatch from a previous
-    // (possibly duplicate, e.g. StrictMode) effect run will see a
-    // mismatched token and stop itself instead of continuing.
     runTokenRef.current += 1;
     const myToken = runTokenRef.current;
-
-    // Reset all state
     setRows([]);
     setColumns([]);
     setFilters({});
@@ -104,20 +92,14 @@ export default function App() {
     setError("");
     setDone(false);
     setLoading(false);
-
-    // Reset all refs
     skipRef.current        = 0;
     colsLockedRef.current = false;
     doneRef.current       = false;
     loadingRef.current    = false;
     selectedRef.current   = selected;
-
-    // Kick first fetch after reset settles
     const t = setTimeout(() => fetchBatch(myToken), 50);
     return () => clearTimeout(t);
   }, [selected]);
-
-  // ── Sort ──
   const handleSort = (col) => {
     setSort(prev => ({
       col,
@@ -125,12 +107,9 @@ export default function App() {
     }));
   };
 
-  // ── Filter ──
   const handleFilter = (col, val) => {
     setFilters(prev => ({ ...prev, [col]: val }));
   };
-
-  // ── Derived rows ──
   const displayRows = (() => {
     let result = [...rows];
     Object.entries(filters).forEach(([col, val]) => {

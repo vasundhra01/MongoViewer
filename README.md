@@ -1,6 +1,7 @@
 # MongoDB Viewer
 
-Dynamic table viewer for MongoDB. Select any collection from a dropdown, data loads 10 rows at a time as you scroll.
+Dynamic table viewer for MongoDB. Select any collection from a dropdown, data loads 10 rows at a time.
+A lightweight full-stack app to browse MongoDB collections in a clean table UI with sorting, filtering, and Excel export.
 
 ---
 
@@ -11,7 +12,11 @@ Dynamic table viewer for MongoDB. Select any collection from a dropdown, data lo
 Open a terminal and run:
 
 ```bash
+<<<<<<< HEAD
 mongod --dbpath "C:\Users\hp\Desktop\theiox_data"
+=======
+mongod --dbpath "path of the database"
+>>>>>>> 5d6f510d76bec8f2433cf78fcef3bb9f9badbd0d
 ```
 
 Keep this terminal open. MongoDB must be running for the backend to connect.
@@ -94,3 +99,25 @@ Change `theiox_data` to whatever your actual MongoDB database name is. If you're
 mongosh
 > show dbs
 ```
+## How pagination works
+ 
+Instead of `skip(n).limit(10)` (slow on large collections), the app uses **keyset pagination**:
+ 
+- Every document in MongoDB has a built-in `_id` field (an ObjectID)
+- The first fetch has no cursor: `find({}).limit(10)`
+- Each response returns `nextCursor` = the `_id` of the last document
+- The next fetch uses: `find({ _id: { $gt: nextCursor } }).limit(10)`
+- This is O(log n) via index — stays fast regardless of collection size
+- Stops when the backend returns `hasMore: false`
+---
+ 
+## How dynamic columns work
+ 
+MongoDB is schemaless so different documents can have different fields. The backend scans all returned documents, collects every unique key, and sends them as a `keys` array alongside the data. The frontend locks the column list after the very first batch and never changes it, so the table header stays stable as more rows load.
+ 
+---
+ 
+## How the fetch loop works
+ 
+Fetching is driven by a plain recursive async function and  not by `useEffect`. After each batch completes, if `hasMore` is true, `setTimeout(fetchBatch, 250)` schedules the next one. This avoids React's stale closure and re-render problems that arise when using `useEffect` as a fetch loop driver.
+ 

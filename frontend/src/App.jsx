@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react"; //react hooks
 import * as XLSX from "xlsx";
 
 const API = "http://localhost:8080";
@@ -23,7 +23,6 @@ export default function App() {
   const selectedRef   = useRef("");
   const runTokenRef   = useRef(0);
 
-  // Load collections on mount
   useEffect(() => {
     fetch(`${API}/api/collections`)
       .then(r => r.json())

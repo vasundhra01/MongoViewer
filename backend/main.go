@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -15,8 +18,8 @@ import (
 
 const (
 	MONGO_URI = "mongodb://localhost:27017"
-	DB_NAME   = "graphql_demo"
-	LIMIT     = 10
+	DB_NAME   = "theiox_data"
+	LIMIT     = 100
 )
 
 var client *mongo.Client
@@ -62,8 +65,12 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/items?collection=<name>&cursor=<lastId>
-// Returns 10 documents, dynamic fields, next cursor
+// GET /api/items?collection=<name>&skip=<n>
+// Returns 100 documents, dynamic fields, next skip value
+// NOTE: pagination uses skip/limit (not _id keyset) because this database's
+// _id field is a custom compound object, not a MongoDB ObjectID — so
+// "_id $gt cursor" comparisons are meaningless here and were causing
+// duplicate/overlapping pages (looked like an infinite loop of rows).
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -71,33 +78,32 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursorParam := r.URL.Query().Get("cursor")
-	filter := bson.M{}
-	if cursorParam != "" {
-		oid, err := primitive.ObjectIDFromHex(cursorParam)
-		if err != nil {
-			http.Error(w, "invalid cursor", http.StatusBadRequest)
-			return
+	skip := int64(0)
+	if skipParam := r.URL.Query().Get("skip"); skipParam != "" {
+		if parsed, err := strconv.ParseInt(skipParam, 10, 64); err == nil && parsed >= 0 {
+			skip = parsed
 		}
-		filter = bson.M{"_id": bson.M{"$gt": oid}}
+		// If parsing fails or value is negative, silently fall back to skip=0
+		// rather than rejecting the request — keeps the fetch loop resilient.
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
-	opts := options.Find().
-		SetSort(bson.D{{Key: "_id", Value: 1}}).
-		SetLimit(int64(LIMIT + 1))
 
-	cur, err := coll.Find(ctx, filter, opts)
+	// Use natural insertion order ($natural) since _id isn't reliably sortable here
+	opts := options.Find().
+		SetSkip(skip).
+		SetLimit(int64(LIMIT + 1)) // fetch 11 to detect hasMore
+
+	cur, err := coll.Find(ctx, bson.M{}, opts)
 	if err != nil {
 		http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer cur.Close(ctx)
 
-	// Decode as raw documents to preserve dynamic fields
 	var rawDocs []bson.M
 	if err := cur.All(ctx, &rawDocs); err != nil {
 		http.Error(w, "decode error: "+err.Error(), http.StatusInternalServerError)
@@ -109,44 +115,67 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		rawDocs = rawDocs[:LIMIT]
 	}
 
-	// Convert bson.M to JSON-serializable map
-	// ObjectIDs become hex strings, other types pass through
 	items := make([]map[string]interface{}, 0, len(rawDocs))
 	for _, doc := range rawDocs {
-		items = append(items, bsonToMap(doc))
+		flat := flattenMap(bsonToMap(doc), "")
+		items = append(items, flat)
 	}
 
-	nextCursor := ""
-	if hasMore && len(items) > 0 {
-		if id, ok := rawDocs[len(rawDocs)-1]["_id"].(primitive.ObjectID); ok {
-			nextCursor = id.Hex()
-		}
-	}
+	nextSkip := skip + int64(len(items))
 
-	// Collect all unique keys across returned docs (for dynamic columns)
 	keySet := map[string]bool{}
 	for _, doc := range items {
 		for k := range doc {
 			keySet[k] = true
 		}
 	}
-	keys := make([]string, 0, len(keySet))
-	// Put _id first
-	if keySet["_id"] {
-		keys = append(keys, "_id")
-		delete(keySet, "_id")
-	}
+
+	var idKeys, otherKeys []string
 	for k := range keySet {
-		keys = append(keys, k)
+		if strings.HasPrefix(k, "_id.") || k == "_id" {
+			idKeys = append(idKeys, k)
+		} else {
+			otherKeys = append(otherKeys, k)
+		}
 	}
+	sort.Strings(idKeys)
+	sort.Strings(otherKeys)
+	keys := append(idKeys, otherKeys...)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"items":      items,
-		"keys":       keys,
-		"nextCursor": nextCursor,
-		"hasMore":    hasMore,
+		"items":    items,
+		"keys":     keys,
+		"nextSkip": nextSkip,
+		"hasMore":  hasMore,
 	})
+}
+
+// flattenMap converts nested objects into flat dot-notation keys.
+// e.g. { _id: { sensor_id: "x", block_no: 1 } }
+//
+//	-> { "_id.sensor_id": "x", "_id.block_no": 1 }
+//
+// Arrays are left as-is (not flattened) since their length varies per doc
+// and flattening arrays into columns doesn't make sense for a table view.
+func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range m {
+		key := k
+		if prefix != "" {
+			key = prefix + "." + k
+		}
+		switch val := v.(type) {
+		case map[string]interface{}:
+			nested := flattenMap(val, key)
+			for nk, nv := range nested {
+				out[nk] = nv
+			}
+		default:
+			out[key] = v
+		}
+	}
+	return out
 }
 
 // bsonToMap recursively converts bson.M to plain map[string]interface{}

@@ -11,7 +11,7 @@ Dynamic table viewer for MongoDB. Select any collection from a dropdown, data lo
 Open a terminal and run:
 
 ```bash
-mongod --dbpath "C:\Users\hp\Desktop\theiox_metadata\graphql_demo"
+mongod --dbpath "C:\Users\hp\Desktop\theiox_data"
 ```
 
 Keep this terminal open. MongoDB must be running for the backend to connect.
@@ -52,7 +52,7 @@ Open http://localhost:5173 in your browser.
 
 ## How it works
 
-- Dropdown lists all collections in your `graphql_demo` database
+- Dropdown lists all collections in your `theiox_data` database
 - Selecting a collection fetches the first 10 documents
 - Scrolling to the bottom automatically fetches the next 10
 - Table columns are **dynamic** — built from whatever fields exist in the documents
@@ -85,10 +85,10 @@ mongo-viewer/
 In `backend/main.go`, line:
 
 ```go
-DB_NAME = "graphql_demo"
+DB_NAME = "theiox_data"
 ```
 
-Change `graphql_demo` to whatever your actual MongoDB database name is. If you're unsure, run:
+Change `theiox_data` to whatever your actual MongoDB database name is. If you're unsure, run:
 
 ```bash
 mongosh

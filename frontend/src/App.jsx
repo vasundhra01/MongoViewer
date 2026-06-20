@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 
 const API = "http://localhost:8080";
-const CHUNK = 10;
+const CHUNK = 100;
 
 export default function App() {
   const [collections, setCollections] = useState([]);
@@ -16,11 +16,12 @@ export default function App() {
   const [filters, setFilters]         = useState({});
 
   // All mutable fetch state lives in refs — never causes re-renders
-  const cursorRef     = useRef(null);
+  const skipRef       = useRef(0);
   const colsLockedRef = useRef(false);
   const doneRef       = useRef(false);
   const loadingRef    = useRef(false);
   const selectedRef   = useRef("");
+  const runTokenRef   = useRef(0);
 
   // Load collections on mount
   useEffect(() => {
@@ -31,7 +32,9 @@ export default function App() {
   }, []);
 
   // ── Single fetch function — reads from refs, writes to refs + state ──
-  async function fetchBatch() {
+  async function fetchBatch(token) {
+    // If a newer run has started (collection changed again), abandon this chain
+    if (token !== runTokenRef.current) return;
     if (loadingRef.current || doneRef.current) return;
     const col = selectedRef.current;
     if (!col) return;
@@ -40,19 +43,23 @@ export default function App() {
     setLoading(true);
 
     try {
-      const url = cursorRef.current
-        ? `${API}/api/items?collection=${col}&cursor=${cursorRef.current}`
-        : `${API}/api/items?collection=${col}`;
+      const url = `${API}/api/items?collection=${col}&skip=${skipRef.current}`;
 
-      const res  = await fetch(url);
+      const res = await fetch(url);
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Server returned ${res.status}: ${errText}`);
+      }
+
       const data = await res.json();
 
-      // Guard: if collection changed while fetching, discard
-      if (selectedRef.current !== col) return;
+      // Guard: stale chain (collection changed, or StrictMode double-run)
+      if (token !== runTokenRef.current || selectedRef.current !== col) return;
 
       const newItems = data.items || [];
-      const more     = !!data.hasMore;
-      const nextCur  = data.nextCursor || null;
+      const more      = !!data.hasMore;
+      const nextSkip  = typeof data.nextSkip === "number" ? data.nextSkip : skipRef.current + newItems.length;
 
       setRows(prev => [...prev, ...newItems]);
 
@@ -61,26 +68,34 @@ export default function App() {
         colsLockedRef.current = true;
       }
 
-      cursorRef.current = nextCur;
+      skipRef.current = nextSkip;
 
       if (!more) {
         doneRef.current = true;
         setDone(true);
       } else {
         // Schedule next batch — plain timeout, no state involved
-        setTimeout(fetchBatch, 250);
+        setTimeout(() => fetchBatch(token), 250);
       }
     } catch (e) {
-      setError("Fetch failed: " + e.message);
+      if (token === runTokenRef.current) setError("Fetch failed: " + e.message);
     } finally {
-      loadingRef.current = false;
-      setLoading(false);
+      if (token === runTokenRef.current) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     }
   }
 
   // ── Reset + kick first fetch when collection changes ──
   useEffect(() => {
     if (!selected) return;
+
+    // Bump the run token — any in-flight fetchBatch from a previous
+    // (possibly duplicate, e.g. StrictMode) effect run will see a
+    // mismatched token and stop itself instead of continuing.
+    runTokenRef.current += 1;
+    const myToken = runTokenRef.current;
 
     // Reset all state
     setRows([]);
@@ -92,14 +107,15 @@ export default function App() {
     setLoading(false);
 
     // Reset all refs
-    cursorRef.current     = null;
+    skipRef.current        = 0;
     colsLockedRef.current = false;
     doneRef.current       = false;
     loadingRef.current    = false;
     selectedRef.current   = selected;
 
     // Kick first fetch after reset settles
-    setTimeout(fetchBatch, 50);
+    const t = setTimeout(() => fetchBatch(myToken), 50);
+    return () => clearTimeout(t);
   }, [selected]);
 
   // ── Sort ──
@@ -168,7 +184,7 @@ export default function App() {
 
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>MongoDB Viewer</h1>
-        <p style={{ fontSize: 13, color: "#888", margin: 0 }}>graphql_demo · localhost:27017</p>
+        <p style={{ fontSize: 13, color: "#888", margin: 0 }}>theiox_data · localhost:27017</p>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
@@ -202,7 +218,7 @@ export default function App() {
             onClick={downloadExcel}
             style={{ fontSize: 12, color: "#fff", background: "#1a7f4b", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", marginLeft: "auto", display: "flex", alignItems: "center", gap: 5 }}
           >
-            ⬇ Download Excel
+            Download Excel (.xlsx)
           </button>
         )}
       </div>
@@ -274,9 +290,9 @@ export default function App() {
           </table>
 
           <div style={{ padding: "10px 14px", textAlign: "center", fontSize: 12, color: "#aaa", borderTop: "1px solid #f0f0f0", background: "#fafafa" }}>
-            {loading && <span>⏳ Loading rows {rows.length + 1}–{rows.length + CHUNK}…</span>}
-            {!loading && done && <span>✓ All {rows.length} rows loaded</span>}
-            {!loading && !done && rows.length > 0 && <span>Loaded {rows.length} rows…</span>}
+            {loading && <span>Loading rows {rows.length + 1}-{rows.length + CHUNK}...</span>}
+            {!loading && done && <span>All {rows.length} rows loaded</span>}
+            {!loading && !done && rows.length > 0 && <span>Loaded {rows.length} rows...</span>}
           </div>
         </div>
       )}

@@ -1,45 +1,36 @@
 package main
 
 import (
-	"context"	//timeout and cancellation
-	"encoding/json"	// converst go structs to json format
+	"context"       //timeout and cancellation
+	"encoding/json" // converst go structs to json format
 	"log"
-<<<<<<< HEAD
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-=======
-	"net/http" //This will create the web server
-	"time"	// for timeout
->>>>>>> 5d6f510d76bec8f2433cf78fcef3bb9f9badbd0d
 
-	"go.mongodb.org/mongo-driver/bson"		//bson is Mongodb doc format
+	"go.mongodb.org/mongo-driver/bson" //bson is Mongodb doc format
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
 const (
-<<<<<<< HEAD
 	MONGO_URI = "mongodb://localhost:27017"
 	DB_NAME   = "theiox_data"
 	LIMIT     = 100
-=======
-	MONGO_URI = "mongodb://localhost:27017"	//change according to down device if difff
-	DB_NAME   = "graphql_demo"	//change to your database name
-	LIMIT     = 10	// i set the loading limit to 10 at a time. can be change
->>>>>>> 5d6f510d76bec8f2433cf78fcef3bb9f9badbd0d
 )
-var client *mongo.Client	// single mongo connection shared by all
+
+var client *mongo.Client // single mongo connection shared by all
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)	//timeout context
-	defer cancel()	// this context will expire auto after 10 sec. change acc to will
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //timeout context
+	defer cancel()                                                           // this context will expire auto after 10 sec. change acc to will
 
 	var err error
 	client, err = mongo.Connect(ctx, options.Client().ApplyURI(MONGO_URI))
 	if err != nil {
-		log.Fatal("MongoDB connect error:", err)	//connection error handler
+		log.Fatal("MongoDB connect error:", err) //connection error handler
 	}
 	defer client.Disconnect(context.Background())
 
@@ -71,15 +62,12 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-<<<<<<< HEAD
 // GET /api/items?collection=<name>&skip=<n>
 // Returns 100 documents, dynamic fields, next skip value
 // NOTE: pagination uses skip/limit (not _id keyset) because this database's
 // _id field is a custom compound object, not a MongoDB ObjectID — so
 // "_id $gt cursor" comparisons are meaningless here and were causing
 // duplicate/overlapping pages (looked like an infinite loop of rows).
-=======
->>>>>>> 5d6f510d76bec8f2433cf78fcef3bb9f9badbd0d
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -138,16 +126,8 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 			keySet[k] = true
 		}
 	}
-<<<<<<< HEAD
 
 	var idKeys, otherKeys []string
-=======
-	keys := make([]string, 0, len(keySet))
-	if keySet["_id"] {
-		keys = append(keys, "_id")
-		delete(keySet, "_id")
-	}
->>>>>>> 5d6f510d76bec8f2433cf78fcef3bb9f9badbd0d
 	for k := range keySet {
 		if strings.HasPrefix(k, "_id.") || k == "_id" {
 			idKeys = append(idKeys, k)
@@ -168,7 +148,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-<<<<<<< HEAD
 // flattenMap converts nested objects into flat dot-notation keys.
 // e.g. { _id: { sensor_id: "x", block_no: 1 } }
 //
@@ -198,8 +177,6 @@ func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} 
 
 // bsonToMap recursively converts bson.M to plain map[string]interface{}
 // so ObjectIDs, timestamps etc. serialize correctly
-=======
->>>>>>> 5d6f510d76bec8f2433cf78fcef3bb9f9badbd0d
 func bsonToMap(doc bson.M) map[string]interface{} {
 	out := make(map[string]interface{}, len(doc))
 	for k, v := range doc {

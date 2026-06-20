@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"       //timeout and cancellation
-	"encoding/json" // converst go structs to json format
+	"encoding/json" // converts go structs to json format
 	"log"
 	"net/http"
 	"sort"
@@ -17,12 +17,12 @@ import (
 )
 
 const (
-	MONGO_URI = "mongodb://localhost:27017"
+	MONGO_URI = "mongodb://localhost:27017" // single mongo connection shared by all
 	DB_NAME   = "theiox_data"
 	LIMIT     = 100
 )
 
-var client *mongo.Client // single mongo connection shared by all
+var client *mongo.Client 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //timeout context
 	defer cancel()                                                           // this context will expire auto after 10 sec. change acc to will
@@ -62,12 +62,6 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/items?collection=<name>&skip=<n>
-// Returns 100 documents, dynamic fields, next skip value
-// NOTE: pagination uses skip/limit (not _id keyset) because this database's
-// _id field is a custom compound object, not a MongoDB ObjectID — so
-// "_id $gt cursor" comparisons are meaningless here and were causing
-// duplicate/overlapping pages (looked like an infinite loop of rows).
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -81,15 +75,12 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 			skip = parsed
 		}
 		// If parsing fails or value is negative, silently fall back to skip=0
-		// rather than rejecting the request — keeps the fetch loop resilient.
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
-
-	// Use natural insertion order ($natural) since _id isn't reliably sortable here
 	opts := options.Find().
 		SetSkip(skip).
 		SetLimit(int64(LIMIT + 1)) // fetch 11 to detect hasMore
@@ -148,13 +139,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// flattenMap converts nested objects into flat dot-notation keys.
-// e.g. { _id: { sensor_id: "x", block_no: 1 } }
-//
-//	-> { "_id.sensor_id": "x", "_id.block_no": 1 }
-//
-// Arrays are left as-is (not flattened) since their length varies per doc
-// and flattening arrays into columns doesn't make sense for a table view.
 func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range m {
@@ -175,8 +159,6 @@ func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} 
 	return out
 }
 
-// bsonToMap recursively converts bson.M to plain map[string]interface{}
-// so ObjectIDs, timestamps etc. serialize correctly
 func bsonToMap(doc bson.M) map[string]interface{} {
 	out := make(map[string]interface{}, len(doc))
 	for k, v := range doc {

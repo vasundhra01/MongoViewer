@@ -98,7 +98,7 @@ Change `theiox_data` to the actual MongoDB database name .
 Instead of `skip(n).limit(100)` (slow on large collections), the app uses **keyset pagination**:
  
 - Every document in MongoDB has a built-in `_id` field (an ObjectID)
-- The first fetch has no cursor: `find({}).limit(10)`
+- The first fetch has no cursor: `find({}).limit(100)`
 - Each response returns `nextCursor` = the `_id` of the last document
 - The next fetch uses: `find({ _id: { $gt: nextCursor } }).limit(100)`
 - This is O(log n) via index — stays fast regardless of collection size

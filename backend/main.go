@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"       //timeout and cancellation
-	"encoding/json" // converts go structs to json format
+	"encoding/json" // converst go structs to json format
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -42,6 +43,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/collections", withCORS(handleCollections))
 	mux.HandleFunc("/api/items", withCORS(handleItems))
+	mux.HandleFunc("/api/tags", withCORS(handleTags))
+	mux.HandleFunc("/api/distinct", withCORS(handleDistinct))
 
 	log.Println("Server running at http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
@@ -62,6 +65,79 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	coll := client.Database(DB_NAME).Collection("tag")
+
+	cur, err := coll.Find(ctx, bson.M{})
+	if err != nil {
+		http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer cur.Close(ctx)
+
+	var docs []bson.M
+	if err := cur.All(ctx, &docs); err != nil {
+		http.Error(w, "decode error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	tags := make(map[string]string, len(docs))
+	for _, doc := range docs {
+		id, ok := doc["_id"].(string)
+		if !ok {
+			continue // skip tags whose _id isn't the expected string form
+		}
+		name, _ := doc["name"].(string)
+		if name == "" {
+			name = id // fall back to the id if no name is set
+		}
+		tags[id] = name
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tags": tags,
+	})
+}
+
+func handleDistinct(w http.ResponseWriter, r *http.Request) {
+	collName := r.URL.Query().Get("collection")
+	field := r.URL.Query().Get("field")
+	if collName == "" || field == "" {
+		http.Error(w, "collection and field params required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	coll := client.Database(DB_NAME).Collection(collName)
+
+	values, err := coll.Distinct(ctx, field, bson.M{})
+	if err != nil {
+		http.Error(w, "distinct error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Normalize everything to strings — the frontend only needs stable,
+	// JSON-safe labels for a <select>, and it round-trips the chosen value
+	// back to us as a plain query string anyway.
+	strVals := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == nil {
+			continue
+		}
+		strVals = append(strVals, fmt.Sprintf("%v", v))
+	}
+	sort.Strings(strVals)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"values": strVals,
+	})
+}
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -74,7 +150,23 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		if parsed, err := strconv.ParseInt(skipParam, 10, 64); err == nil && parsed >= 0 {
 			skip = parsed
 		}
-		// If parsing fails or value is negative, silently fall back to skip=0
+	
+	}
+	var andFilters []bson.M
+
+	if f := buildEqualityFilter(r.URL.Query().Get("filterField"), r.URL.Query().Get("filterValue")); f != nil {
+		andFilters = append(andFilters, f)
+	}
+	if f := buildTimeFilter(r.URL.Query().Get("timeField"), r.URL.Query().Get("fromTime"), r.URL.Query().Get("toTime")); f != nil {
+		andFilters = append(andFilters, f)
+	}
+	if f := buildTagsFilter(r.URL.Query().Get("tagFields")); f != nil {
+		andFilters = append(andFilters, f)
+	}
+
+	filter := bson.M{}
+	if len(andFilters) > 0 {
+		filter = bson.M{"$and": andFilters}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -85,7 +177,7 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		SetSkip(skip).
 		SetLimit(int64(LIMIT + 1)) // fetch 101 to detect hasMore
 
-	cur, err := coll.Find(ctx, bson.M{}, opts)
+	cur, err := coll.Find(ctx, filter, opts)
 	if err != nil {
 		http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -139,6 +231,90 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func buildEqualityFilter(field, value string) bson.M {
+	if field == "" || value == "" {
+		return nil
+	}
+
+	candidates := []interface{}{value}
+
+	if i, err := strconv.ParseInt(value, 10, 64); err == nil {
+		candidates = append(candidates, i, int32(i))
+	}
+	if f, err := strconv.ParseFloat(value, 64); err == nil {
+		candidates = append(candidates, f)
+	}
+	if b, err := strconv.ParseBool(value); err == nil {
+		candidates = append(candidates, b)
+	}
+
+	return bson.M{field: bson.M{"$in": candidates}}
+}
+const dtLayout = "2006-01-02T15:04"
+
+func buildTimeFilter(field, from, to string) bson.M {
+	if field == "" || (from == "" && to == "") {
+		return nil
+	}
+
+	var fromT, toT time.Time
+	hasFrom, hasTo := false, false
+
+	if from != "" {
+		if t, err := time.Parse(dtLayout, from); err == nil {
+			fromT, hasFrom = t, true
+		}
+	}
+	if to != "" {
+		if t, err := time.Parse(dtLayout, to); err == nil {
+			toT, hasTo = t, true
+		}
+	}
+	if !hasFrom && !hasTo {
+		return nil
+	}
+
+	dateRange := bson.M{}
+	strRange := bson.M{}
+	if hasFrom {
+		dateRange["$gte"] = primitive.NewDateTimeFromTime(fromT)
+		strRange["$gte"] = fromT.Format(time.RFC3339)
+	}
+	if hasTo {
+		dateRange["$lte"] = primitive.NewDateTimeFromTime(toT)
+		strRange["$lte"] = toT.Format(time.RFC3339)
+	}
+
+	return bson.M{
+		"$or": []bson.M{
+			{field: dateRange},
+			{field: strRange},
+		},
+	}
+}
+
+func buildTagsFilter(tagsParam string) bson.M {
+	if tagsParam == "" {
+		return nil
+	}
+
+	var conds []bson.M
+	for _, f := range strings.Split(tagsParam, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		conds = append(conds, bson.M{f: bson.M{"$exists": true, "$ne": nil}})
+	}
+
+	if len(conds) == 0 {
+		return nil
+	}
+	if len(conds) == 1 {
+		return conds[0]
+	}
+	return bson.M{"$or": conds}
+}
 func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range m {

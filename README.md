@@ -12,10 +12,7 @@ A lightweight full-stack app to browse MongoDB collections in a clean table UI w
 Open a terminal and run:
 
 ```bash
-
 mongod --dbpath "C:\Users\hp\Desktop\theiox_data"
-
-mongod --dbpath "path of the database"
 ```
 
 Keep this terminal open. MongoDB must be running for the backend to connect.

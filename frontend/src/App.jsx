@@ -107,7 +107,6 @@ export default function App() {
       .catch(() => {}); // tag names are a nice-to-have; silently fall back to raw ids
   }, []);
 
-  // ── Single fetch function — reads from refs, writes to refs + state ──
   async function fetchBatch(token) {
     // If a newer run has started (collection changed again), abandon this chain
     if (token !== runTokenRef.current) return;
@@ -145,7 +144,6 @@ export default function App() {
 
       const data = await res.json();
 
-      // Guard: stale chain (collection changed, or StrictMode double-run)
       if (token !== runTokenRef.current || selectedRef.current !== col) return;
 
       const newItems = data.items || [];
@@ -165,7 +163,6 @@ export default function App() {
         doneRef.current = true;
         setDone(true);
       } else {
-        // Schedule next batch — plain timeout, no state involved
         setTimeout(() => fetchBatch(token), 250);
       }
     } catch (e) {
@@ -201,13 +198,8 @@ export default function App() {
   useEffect(() => {
     if (!selected) return;
 
-    // Bump the run token — any in-flight fetchBatch from a previous
-    // (possibly duplicate, e.g. StrictMode) effect run will see a
-    // mismatched token and stop itself instead of continuing.
     runTokenRef.current += 1;
     const myToken = runTokenRef.current;
-
-    // Reset all state
     setRows([]);
     setColumns([]);
     setFilters({});
@@ -301,13 +293,10 @@ export default function App() {
     }));
   };
 
-  // ── Filter ──
   const handleFilter = (col, val) => {
     setPage(1);
     setFilters(prev => ({ ...prev, [col]: val }));
   };
-
-  // ── Derived rows ──
   const displayRows = (() => {
     let result = [...rows];
 

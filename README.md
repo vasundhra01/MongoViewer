@@ -47,16 +47,16 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser.
+Open http://localhost:5173 in browser
 
 ---
 
 ## How it works
 
-- Dropdown lists all collections in your `theiox_data` database
-- Selecting a collection fetches the first 10 documents
-- Scrolling to the bottom automatically fetches the next 10
-- Table columns are **dynamic** — built from whatever fields exist in the documents
+- Dropdown lists all collections in the `theiox_data` database
+- Selecting a collection fetches the first 100 documents
+- Scrolling to the bottom automatically fetches the next 100
+- Table columns are *dynamic* — built from whatever fields exist in the documents
 - `_id` (ObjectID) is converted to a readable hex string
 - Nested objects are shown as compact JSON
 - Booleans are colour-coded green/red
@@ -89,20 +89,15 @@ In `backend/main.go`, line:
 DB_NAME = "theiox_data"
 ```
 
-Change `theiox_data` to whatever your actual MongoDB database name is. If you're unsure, run:
-
-```bash
-mongosh
-> show dbs
-```
+Change `theiox_data` to the actual MongoDB database name . 
 ## How pagination works
  
-Instead of `skip(n).limit(10)` (slow on large collections), the app uses **keyset pagination**:
+Instead of `skip(n).limit(100)` (slow on large collections), the app uses **keyset pagination**:
  
 - Every document in MongoDB has a built-in `_id` field (an ObjectID)
-- The first fetch has no cursor: `find({}).limit(10)`
+- The first fetch has no cursor: `find({}).limit(100)`
 - Each response returns `nextCursor` = the `_id` of the last document
-- The next fetch uses: `find({ _id: { $gt: nextCursor } }).limit(10)`
+- The next fetch uses: `find({ _id: { $gt: nextCursor } }).limit(100)`
 - This is O(log n) via index — stays fast regardless of collection size
 - Stops when the backend returns `hasMore: false`
 ---

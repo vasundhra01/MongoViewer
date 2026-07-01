@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	MONGO_URI = "mongodb://localhost:27017"
+	MONGO_URI = "mongodb://localhost:27017" // single mongo connection shared by all
 	DB_NAME   = "theiox_data"
 	LIMIT     = 100
 )
 
-var client *mongo.Client // single mongo connection shared by all
+var client *mongo.Client 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //timeout context
 	defer cancel()                                                           // this context will expire auto after 10 sec. change acc to will
@@ -65,10 +65,6 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/tags
-// Returns a map of tag _id (e.g. "tag_103") -> human-readable name from the
-// "tag" collection, used by the frontend to label raw_readings.* columns.
-func handleTags(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -106,12 +102,6 @@ func handleTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/distinct?collection=X&field=Y
-// Returns every distinct value Mongo has for a given (possibly dotted) field
-// path in a collection, e.g. field=raw_readings.device_id. Used to populate
-// filter dropdowns (like the device id selector) with the FULL set of values
-// that exist in the collection, not just whatever happens to be loaded into
-// the browser so far.
 func handleDistinct(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	field := r.URL.Query().Get("field")
@@ -148,12 +138,6 @@ func handleDistinct(w http.ResponseWriter, r *http.Request) {
 		"values": strVals,
 	})
 }
-
-// Returns 100 documents, dynamic fields, next skip value
-// NOTE: pagination uses skip/limit (not _id keyset) because this database's
-// _id field is a custom compound object, not a MongoDB ObjectID — so
-// "_id $gt cursor" comparisons are meaningless here and were causing
-// duplicate/overlapping pages (looked like an infinite loop of rows).
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -166,14 +150,8 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		if parsed, err := strconv.ParseInt(skipParam, 10, 64); err == nil && parsed >= 0 {
 			skip = parsed
 		}
-		// If parsing fails or value is negative, silently fall back to skip=0
-		// rather than rejecting the request — keeps the fetch loop resilient.
+	
 	}
-
-	// Optional server-side filters — lets the frontend push filtering (device
-	// dropdown, tag toggles, time range) down into Mongo instead of pulling
-	// every document across the wire and filtering in JS. Much lower latency
-	// on large collections, especially with an index on the filtered fields.
 	var andFilters []bson.M
 
 	if f := buildEqualityFilter(r.URL.Query().Get("filterField"), r.URL.Query().Get("filterValue")); f != nil {
@@ -195,11 +173,9 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
-
-	// Use natural insertion order ($natural) since _id isn't reliably sortable here
 	opts := options.Find().
 		SetSkip(skip).
-		SetLimit(int64(LIMIT + 1)) // fetch 11 to detect hasMore
+		SetLimit(int64(LIMIT + 1)) // fetch 101 to detect hasMore
 
 	cur, err := coll.Find(ctx, filter, opts)
 	if err != nil {
@@ -255,12 +231,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// buildEqualityFilter builds an equality filter for an (optional) field/value
-// pair. The frontend only ever sends the value as a plain string (it came
-// from JSON), but the underlying Mongo field might actually be stored as an
-// int, float, or bool — so we match against several type-coerced candidates
-// with $in rather than assuming it's a string. Returns nil if there's
-// nothing to filter on.
 func buildEqualityFilter(field, value string) bson.M {
 	if field == "" || value == "" {
 		return nil
@@ -280,16 +250,8 @@ func buildEqualityFilter(field, value string) bson.M {
 
 	return bson.M{field: bson.M{"$in": candidates}}
 }
-
-// dtLayout matches the value format an HTML <input type="datetime-local">
-// sends, e.g. "2024-01-31T14:05" — no seconds, no timezone.
 const dtLayout = "2006-01-02T15:04"
 
-// buildTimeFilter builds a range filter on a (possibly dotted) time field.
-// The field might be stored in Mongo as a native BSON date, or as an RFC3339
-// string (this backend writes dates out as RFC3339 strings when flattening
-// docs for the frontend) — since we can't be sure which, we match either
-// representation with $or. Returns nil if there's no usable range.
 func buildTimeFilter(field, from, to string) bson.M {
 	if field == "" || (from == "" && to == "") {
 		return nil
@@ -331,11 +293,6 @@ func buildTimeFilter(field, from, to string) bson.M {
 	}
 }
 
-// buildTagsFilter takes a comma-separated list of (dotted) raw_readings.*
-// field names and returns a filter matching documents that have AT LEAST
-// ONE of them present (mirrors the "show me docs relevant to these tags"
-// intent behind the tag toggle buttons in the UI). Returns nil if the list
-// is empty.
 func buildTagsFilter(tagsParam string) bson.M {
 	if tagsParam == "" {
 		return nil
@@ -358,14 +315,6 @@ func buildTagsFilter(tagsParam string) bson.M {
 	}
 	return bson.M{"$or": conds}
 }
-
-// flattenMap converts nested objects into flat dot-notation keys.
-// e.g. { _id: { sensor_id: "x", block_no: 1 } }
-//
-//	-> { "_id.sensor_id": "x", "_id.block_no": 1 }
-//
-// Arrays are left as-is (not flattened) since their length varies per doc
-// and flattening arrays into columns doesn't make sense for a table view.
 func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range m {
@@ -386,8 +335,6 @@ func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} 
 	return out
 }
 
-// bsonToMap recursively converts bson.M to plain map[string]interface{}
-// so ObjectIDs, timestamps etc. serialize correctly
 func bsonToMap(doc bson.M) map[string]interface{} {
 	out := make(map[string]interface{}, len(doc))
 	for k, v := range doc {

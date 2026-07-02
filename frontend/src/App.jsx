@@ -58,6 +58,23 @@ const GlobalStyle = () => (
   `}</style>
 );
 
+// Converts a <input type="datetime-local"> value (e.g. "2026-06-19T17:01"),
+// which carries NO timezone info and represents the browser's LOCAL
+// wall-clock time, into a real UTC ISO-8601 string the backend can parse
+// unambiguously (e.g. "2026-06-19T11:31:00.000Z" for a browser in IST).
+//
+// `new Date("2026-06-19T17:01")` is interpreted by the JS engine as local
+// time, so `.toISOString()` yields the correct UTC instant. Previously the
+// raw local string was sent straight to the backend, which assumed it was
+// already UTC — silently shifting every time-range query by the browser's
+// UTC offset (5.5h for IST) and making the filter appear to return nothing.
+function localDateTimeToUTCISO(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
 export default function App() {
   const [collections, setCollections] = useState([]);
   const [selected, setSelected]       = useState("");
@@ -79,7 +96,7 @@ export default function App() {
   // ── Filter panel (applied only on Execute) ──
   const [pendingTags, setPendingTags] = useState(new Set()); // columns toggled but not yet applied
   const [appliedTags, setAppliedTags] = useState(new Set()); // columns actively filtering
-  const [pendingFrom, setPendingFrom] = useState("");        // datetime-local string
+  const [pendingFrom, setPendingFrom] = useState("");        // datetime-local string (LOCAL time, as typed)
   const [pendingTo,   setPendingTo]   = useState("");
   const [appliedFrom, setAppliedFrom] = useState("");
   const [appliedTo,   setAppliedTo]   = useState("");
@@ -356,10 +373,14 @@ export default function App() {
     setAppliedTo(pendingTo);
     setPage(1);
 
+    // Convert the local datetime-local values to UTC ISO strings before
+    // sending — the backend expects an unambiguous, timezone-aware
+    // timestamp. Sending the raw local string here was the root cause of
+    // the time filter appearing to return nothing (see localDateTimeToUTCISO).
     activeFilterRef.current = {
       timeField: timeCol,
-      fromTime: pendingFrom,
-      toTime: pendingTo,
+      fromTime: localDateTimeToUTCISO(pendingFrom),
+      toTime: localDateTimeToUTCISO(pendingTo),
       tagFields: Array.from(pendingTags).join(","),
     };
     restartFetch();
@@ -768,7 +789,7 @@ function pageBtnStyle(active, disabled) {
   };
 }
 
-// Builds a compact page list like: 1 … 4 5 [6] 7 8 … 12
+// To builds compact page list like: 1 … 4 5 [6] 7 8 … 12
 function pageNumbersToShow(current, total) {
   const delta = 1;
   const range = [];

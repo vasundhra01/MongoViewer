@@ -23,22 +23,30 @@ const (
 	LIMIT     = 100
 )
 
-var client *mongo.Client 
+var client *mongo.Client // single mongo connection shared by all
+
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //timeout context
-	defer cancel()                                                           // this context will expire auto after 10 sec. change acc to will
+	// Connect with short timeouts — mongo.Connect is non-blocking; the actual
+	// TCP handshake happens lazily on the first real operation.
+	clientOpts := options.Client().
+		ApplyURI(MONGO_URI).
+		SetConnectTimeout(3 * time.Second).
+		SetServerSelectionTimeout(5 * time.Second)
 
 	var err error
-	client, err = mongo.Connect(ctx, options.Client().ApplyURI(MONGO_URI))
+	client, err = mongo.Connect(context.Background(), clientOpts)
 	if err != nil {
-		log.Fatal("MongoDB connect error:", err) //connection error handler
+		log.Fatal("MongoDB connect error:", err)
 	}
 	defer client.Disconnect(context.Background())
 
-	if err := client.Ping(ctx, nil); err != nil {
-		log.Fatal("MongoDB ping error:", err)
-	}
-	log.Println("Connected to MongoDB at", MONGO_URI)
+	// Ping in background — don't block server startup waiting for Mongo. This was changed because server was taking a lot of time to start
+	// The HTTP server is accepting connections in milliseconds regardless.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client.Ping(ctx, nil) // best-effort; errors surface on first real request
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/collections", withCORS(handleCollections))
@@ -46,9 +54,9 @@ func main() {
 	mux.HandleFunc("/api/tags", withCORS(handleTags))
 	mux.HandleFunc("/api/distinct", withCORS(handleDistinct))
 
-	log.Println("Server running at http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
+
 func handleCollections(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -85,9 +93,9 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 
 	tags := make(map[string]string, len(docs))
 	for _, doc := range docs {
-		id, ok := doc["_id"].(string)
-		if !ok {
-			continue // skip tags whose _id isn't the expected string form
+		id := stringifyID(doc["_id"])
+		if id == "" {
+			continue // skip tags with no usable id
 		}
 		name, _ := doc["name"].(string)
 		if name == "" {
@@ -114,16 +122,12 @@ func handleDistinct(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
-
 	values, err := coll.Distinct(ctx, field, bson.M{})
 	if err != nil {
 		http.Error(w, "distinct error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Normalize everything to strings — the frontend only needs stable,
-	// JSON-safe labels for a <select>, and it round-trips the chosen value
-	// back to us as a plain query string anyway.
 	strVals := make([]string, 0, len(values))
 	for _, v := range values {
 		if v == nil {
@@ -173,9 +177,10 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
+
 	opts := options.Find().
 		SetSkip(skip).
-		SetLimit(int64(LIMIT + 1)) // fetch 101 to detect hasMore
+		SetLimit(int64(LIMIT + 1))
 
 	cur, err := coll.Find(ctx, filter, opts)
 	if err != nil {
@@ -235,9 +240,7 @@ func buildEqualityFilter(field, value string) bson.M {
 	if field == "" || value == "" {
 		return nil
 	}
-
 	candidates := []interface{}{value}
-
 	if i, err := strconv.ParseInt(value, 10, 64); err == nil {
 		candidates = append(candidates, i, int32(i))
 	}
@@ -247,57 +250,68 @@ func buildEqualityFilter(field, value string) bson.M {
 	if b, err := strconv.ParseBool(value); err == nil {
 		candidates = append(candidates, b)
 	}
-
 	return bson.M{field: bson.M{"$in": candidates}}
 }
-const dtLayout = "2006-01-02T15:04"
 
+const dtLayoutNaive = "2006-01-02T15:04"
+
+func parseFrontendTime(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", value); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(dtLayoutNaive, value); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// buildTimeFilter builds a Mongo range filter on a datetime field.
+// Handles both native BSON dates and ISO string representations.
 func buildTimeFilter(field, from, to string) bson.M {
 	if field == "" || (from == "" && to == "") {
 		return nil
 	}
-
-	var fromT, toT time.Time
-	hasFrom, hasTo := false, false
-
-	if from != "" {
-		if t, err := time.Parse(dtLayout, from); err == nil {
-			fromT, hasFrom = t, true
-		}
-	}
-	if to != "" {
-		if t, err := time.Parse(dtLayout, to); err == nil {
-			toT, hasTo = t, true
-		}
-	}
+	fromT, hasFrom := parseFrontendTime(from)
+	toT, hasTo := parseFrontendTime(to)
 	if !hasFrom && !hasTo {
 		return nil
 	}
 
 	dateRange := bson.M{}
-	strRange := bson.M{}
 	if hasFrom {
 		dateRange["$gte"] = primitive.NewDateTimeFromTime(fromT)
-		strRange["$gte"] = fromT.Format(time.RFC3339)
 	}
 	if hasTo {
 		dateRange["$lte"] = primitive.NewDateTimeFromTime(toT)
-		strRange["$lte"] = toT.Format(time.RFC3339)
 	}
 
-	return bson.M{
-		"$or": []bson.M{
-			{field: dateRange},
-			{field: strRange},
-		},
+	strFormats := []string{time.RFC3339, "2006-01-02T15:04:05.000Z07:00"}
+	var strConds []bson.M
+	for _, layout := range strFormats {
+		strRange := bson.M{}
+		if hasFrom {
+			strRange["$gte"] = fromT.UTC().Format(layout)
+		}
+		if hasTo {
+			strRange["$lte"] = toT.UTC().Format(layout)
+		}
+		strConds = append(strConds, bson.M{field: strRange})
 	}
+
+	orConds := append([]bson.M{{field: dateRange}}, strConds...)
+	return bson.M{"$or": orConds}
 }
 
 func buildTagsFilter(tagsParam string) bson.M {
 	if tagsParam == "" {
 		return nil
 	}
-
 	var conds []bson.M
 	for _, f := range strings.Split(tagsParam, ",") {
 		f = strings.TrimSpace(f)
@@ -306,7 +320,6 @@ func buildTagsFilter(tagsParam string) bson.M {
 		}
 		conds = append(conds, bson.M{f: bson.M{"$exists": true, "$ne": nil}})
 	}
-
 	if len(conds) == 0 {
 		return nil
 	}
@@ -367,6 +380,23 @@ func bsonArrayToSlice(arr bson.A) []interface{} {
 		}
 	}
 	return out
+}
+
+func stringifyID(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case primitive.ObjectID:
+		return val.Hex()
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	default:
+		return ""
+	}
 }
 
 func withCORS(h http.HandlerFunc) http.HandlerFunc {

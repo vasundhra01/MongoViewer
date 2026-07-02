@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	MONGO_URI = "mongodb://localhost:27017"
+	MONGO_URI = "mongodb://localhost:27017" // single mongo connection shared by all
 	DB_NAME   = "theiox_data"
 	LIMIT     = 100
 )
@@ -40,7 +40,7 @@ func main() {
 	}
 	defer client.Disconnect(context.Background())
 
-	// Ping in background — don't block server startup waiting for Mongo.
+	// Ping in background — don't block server startup waiting for Mongo. This was changed because server was taking a lot of time to start
 	// The HTTP server is accepting connections in milliseconds regardless.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -73,10 +73,6 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/tags
-// Returns a map of tag _id (e.g. "tag_103") -> human-readable name from the
-// "tag" collection, used by the frontend to label raw_readings.* columns.
-func handleTags(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -114,10 +110,6 @@ func handleTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/distinct?collection=X&field=Y
-// Returns every distinct value for a field path in a collection.
-// Used to populate the device dropdown with all values that exist,
-// not just whatever is loaded in the browser.
 func handleDistinct(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	field := r.URL.Query().Get("field")
@@ -150,12 +142,6 @@ func handleDistinct(w http.ResponseWriter, r *http.Request) {
 		"values": strVals,
 	})
 }
-
-// Returns 100 documents, dynamic fields, next skip value
-// NOTE: pagination uses skip/limit (not _id keyset) because this database's
-// _id field is a custom compound object, not a MongoDB ObjectID — so
-// "_id $gt cursor" comparisons are meaningless here and were causing
-// duplicate/overlapping pages (looked like an infinite loop of rows).
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -168,11 +154,8 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		if parsed, err := strconv.ParseInt(skipParam, 10, 64); err == nil && parsed >= 0 {
 			skip = parsed
 		}
-		// If parsing fails or value is negative, silently fall back to skip=0
-		// rather than rejecting the request — keeps the fetch loop resilient.
+	
 	}
-
-	// Optional server-side filters — device, time range, tag fields
 	var andFilters []bson.M
 
 	if f := buildEqualityFilter(r.URL.Query().Get("filterField"), r.URL.Query().Get("filterValue")); f != nil {
@@ -253,8 +236,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// buildEqualityFilter matches a field against a value, trying int/float/bool
-// coercions so it works regardless of how the value is stored in Mongo.
 func buildEqualityFilter(field, value string) bson.M {
 	if field == "" || value == "" {
 		return nil
@@ -327,8 +308,6 @@ func buildTimeFilter(field, from, to string) bson.M {
 	return bson.M{"$or": orConds}
 }
 
-// buildTagsFilter returns a filter matching docs that have any of the given
-// raw_readings.* fields present.
 func buildTagsFilter(tagsParam string) bson.M {
 	if tagsParam == "" {
 		return nil
@@ -349,14 +328,6 @@ func buildTagsFilter(tagsParam string) bson.M {
 	}
 	return bson.M{"$or": conds}
 }
-
-// flattenMap converts nested objects into flat dot-notation keys.
-// e.g. { _id: { sensor_id: "x", block_no: 1 } }
-//
-//	-> { "_id.sensor_id": "x", "_id.block_no": 1 }
-//
-// Arrays are left as-is (not flattened) since their length varies per doc
-// and flattening arrays into columns doesn't make sense for a table view.
 func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range m {
@@ -377,8 +348,6 @@ func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} 
 	return out
 }
 
-// bsonToMap recursively converts bson.M to plain map[string]interface{}
-// so ObjectIDs, timestamps etc. serialize correctly
 func bsonToMap(doc bson.M) map[string]interface{} {
 	out := make(map[string]interface{}, len(doc))
 	for k, v := range doc {
@@ -413,10 +382,6 @@ func bsonArrayToSlice(arr bson.A) []interface{} {
 	return out
 }
 
-// stringifyID converts a Mongo _id of any plausible type (string,
-// ObjectID, number, etc.) into its string form, so tag lookups work
-// regardless of how _id was stored on import. Returns "" if it can't
-// be reasonably stringified.
 func stringifyID(v interface{}) string {
 	switch val := v.(type) {
 	case string:

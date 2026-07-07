@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"       //timeout and cancellation
-	"encoding/json" // converst go structs to json format
+	"context"     
+	"encoding/json" 
 	"errors"
 	"fmt"
 	"log"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson" //bson is Mongodb doc format
+	"go.mongodb.org/mongo-driver/bson" 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -23,21 +23,6 @@ const (
 	MONGO_URI = "mongodb://localhost:27017"
 	DB_NAME   = "selco_data"
 	LIMIT     = 100
-
-	// Previously each request context was given only 5s. Large/filtered
-	// collections routinely need longer than that (skip-based pagination
-	// gets slower the further in you page, since Mongo has to walk and
-	// discard every skipped document; the time-range filter also uses an
-	// $or across a BSON-date condition and two string-format conditions,
-	// which can't always be served by a single index). A 5s ceiling meant
-	// the context was cancelled mid-read as soon as a query ran long,
-	// surfacing as: "context deadline exceeded" -> a broken TCP read ->
-	// "incomplete read of message header". Bumping this gives real queries
-	// room to finish instead of being killed by an artificially tight
-	// deadline. If you still hit timeouts at this value under normal load,
-	// that's usually a sign an index is missing on whatever field you're
-	// filtering/sorting by (device id field, time field, tag fields),
-	// rather than a reason to raise the timeout further.
 	ITEMS_QUERY_TIMEOUT      = 30 * time.Second
 	METADATA_QUERY_TIMEOUT   = 20 * time.Second
 	COLLECTIONS_LIST_TIMEOUT = 10 * time.Second
@@ -52,17 +37,7 @@ func main() {
 		ApplyURI(MONGO_URI).
 		SetConnectTimeout(10 * time.Second).
 		SetServerSelectionTimeout(10 * time.Second).
-		// SocketTimeout bounds how long a single network round-trip on an
-		// established connection may take. Left at the driver default (30s)
-		// this is fine, but we set it explicitly so it's always >= the
-		// longest request-context timeout below — otherwise the socket
-		// could be torn down by the driver before our own context deadline
-		// even fires, which produces the exact "incomplete read of message
-		// header" symptom reported.
 		SetSocketTimeout(45 * time.Second).
-		// A small, bounded pool avoids opening a fresh connection per
-		// request (which is slow and can exhaust Mongo's own connection
-		// limit under bursty polling from the frontend's fetch loop).
 		SetMaxPoolSize(50).
 		SetMinPoolSize(2)
 
@@ -73,7 +48,7 @@ func main() {
 	}
 	defer client.Disconnect(context.Background())
 
-	// Ping in background — don't block server startup waiting for Mongo.
+	// Ping in background — don't block server startup waiting for Mongo. This was changed because server was taking a lot of time to start
 	// The HTTP server is accepting connections in milliseconds regardless.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -94,10 +69,6 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
 
-// writeMongoError inspects a Mongo error and responds with an appropriate
-// status + message. Deadline/timeout errors get a 504 with an actionable
-// hint instead of a bare 500, since "the query was too slow" and "the
-// query is broken" need different responses from the caller.
 func writeMongoError(w http.ResponseWriter, label string, err error) {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, mongo.ErrClientDisconnected) {
 		http.Error(w, fmt.Sprintf(
@@ -126,9 +97,6 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/tags
-// Returns a map of tag _id (e.g. "tag_103") -> human-readable name from the
-// "tag" collection, used by the frontend to label raw_readings.* columns.
 func handleTags(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), METADATA_QUERY_TIMEOUT)
 	defer cancel()
@@ -152,11 +120,11 @@ func handleTags(w http.ResponseWriter, r *http.Request) {
 	for _, doc := range docs {
 		id := stringifyID(doc["_id"])
 		if id == "" {
-			continue // skip tags with no usable id
+			continue 
 		}
 		name, _ := doc["name"].(string)
 		if name == "" {
-			name = id // fall back to the id if no name is set
+			name = id 
 		}
 		tags[id] = name
 	}
@@ -167,13 +135,7 @@ func handleTags(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// toDisplayString coerces a BSON value into a display string. Some
-// datasets store fields like stateName/districtName inconsistently
-// (numbers, or missing entirely) — a bare .(string) assertion silently
-// returns "" for anything that isn't exactly a string, which is
-// indistinguishable from the field genuinely being empty. This widens
-// the accepted types so a non-string value still renders instead of
-// disappearing.
+
 func toDisplayString(v interface{}) string {
 	switch val := v.(type) {
 	case string:
@@ -189,9 +151,6 @@ func toDisplayString(v interface{}) string {
 	}
 }
 
-// mapKeys lists the keys of a bson.M — used only for the one-time debug
-// log in handleDevices so you can see the actual field names/casing
-// present in general_info when a hierarchy field comes back empty.
 func mapKeys(m bson.M) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -201,13 +160,6 @@ func mapKeys(m bson.M) []string {
 	return keys
 }
 
-// GET /api/devices
-// Reads the device_instance collection and returns
-// [{id, name, stateName, districtName, blockName}] where id is the
-// document _id, name is general_info.device_name, and the hierarchy
-// fields come from general_info.stateName / districtName / blockName.
-// Used to populate the device dropdown and the "Show Hierarchy" view
-// in the toolbar.
 func handleDevices(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), METADATA_QUERY_TIMEOUT)
 	defer cancel()
@@ -249,12 +201,6 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 			stateName = toDisplayString(gi["stateName"])
 			districtName = toDisplayString(gi["districtName"])
 			blockName = toDisplayString(gi["blockName"])
-
-			// One-time debug print: if any hierarchy field came back empty,
-			// dump the actual keys present under general_info so you can
-			// check the real field names/casing in the live data instead
-			// of guessing. Check your server's stdout/log after hitting
-			// /api/devices.
 			if !loggedSample && (stateName == "" || districtName == "" || blockName == "") {
 				log.Printf("handleDevices debug: general_info keys for device %s: %v", id, mapKeys(gi))
 				loggedSample = true
@@ -264,7 +210,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 			loggedSample = true
 		}
 		if name == "" {
-			name = id // fall back to id if name missing
+			name = id 
 		}
 		devices = append(devices, Device{
 			ID:           id,
@@ -283,10 +229,6 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"devices": devices})
 }
 
-// GET /api/distinct?collection=X&field=Y
-// Returns every distinct value for a field path in a collection.
-// Used to populate the device dropdown with all values that exist,
-// not just whatever is loaded in the browser.
 func handleDistinct(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	field := r.URL.Query().Get("field")
@@ -319,19 +261,6 @@ func handleDistinct(w http.ResponseWriter, r *http.Request) {
 		"values": strVals,
 	})
 }
-
-// Returns 100 documents, dynamic fields, next skip value
-// NOTE: pagination uses skip/limit (not _id keyset) because this database's
-// _id field is a custom compound object, not a MongoDB ObjectID — so
-// "_id $gt cursor" comparisons are meaningless here and were causing
-// duplicate/overlapping pages (looked like an infinite loop of rows).
-//
-// Trade-off to be aware of: skip/limit cost grows with skip size, since
-// Mongo must walk and discard every skipped document before returning the
-// next page. For very large collections/deep pagination this is the most
-// likely source of slow queries — if you outgrow ITEMS_QUERY_TIMEOUT even
-// after adding indexes, the real fix is a proper range cursor on a stable,
-// consistently-ordered field (e.g. a timestamp), not a bigger timeout.
 func handleItems(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	if collName == "" {
@@ -344,11 +273,8 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		if parsed, err := strconv.ParseInt(skipParam, 10, 64); err == nil && parsed >= 0 {
 			skip = parsed
 		}
-		// If parsing fails or value is negative, silently fall back to skip=0
-		// rather than rejecting the request — keeps the fetch loop resilient.
+	
 	}
-
-	// Optional server-side filters — device, time range, tag fields
 	var andFilters []bson.M
 
 	if f := buildEqualityFilter(r.URL.Query().Get("filterField"), r.URL.Query().Get("filterValue")); f != nil {
@@ -429,10 +355,6 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// buildEqualityFilter matches a field against one or more comma-separated
-// values (used for multi-select filters like "device A,device B"), trying
-// int/float/bool coercions for each so it works regardless of how the
-// value is stored in Mongo.
 func buildEqualityFilter(field, value string) bson.M {
 	if field == "" || value == "" {
 		return nil
@@ -480,8 +402,6 @@ func parseFrontendTime(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// buildTimeFilter builds a Mongo range filter on a datetime field.
-// Handles both native BSON dates and ISO string representations.
 func buildTimeFilter(field, from, to string) bson.M {
 	if field == "" || (from == "" && to == "") {
 		return nil
@@ -517,8 +437,6 @@ func buildTimeFilter(field, from, to string) bson.M {
 	return bson.M{"$or": orConds}
 }
 
-// buildTagsFilter returns a filter matching docs that have any of the given
-// raw_readings.* fields present.
 func buildTagsFilter(tagsParam string) bson.M {
 	if tagsParam == "" {
 		return nil
@@ -560,8 +478,6 @@ func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} 
 	return out
 }
 
-// bsonToMap recursively converts bson.M to plain map[string]interface{}
-// so ObjectIDs, timestamps etc. serialize correctly
 func bsonToMap(doc bson.M) map[string]interface{} {
 	out := make(map[string]interface{}, len(doc))
 	for k, v := range doc {
@@ -571,10 +487,6 @@ func bsonToMap(doc bson.M) map[string]interface{} {
 		case primitive.DateTime:
 			out[k] = val.Time().Format(time.RFC3339)
 		case float64:
-			// JSON has no NaN/Infinity literals — encoding/json returns an
-			// error mid-write when it hits them, truncating the response and
-			// causing "Unexpected end of JSON input" on the frontend.
-			// Replace with null so the response is always valid JSON.
 			if math.IsNaN(val) || math.IsInf(val, 0) {
 				out[k] = nil
 			} else {
@@ -614,10 +526,6 @@ func bsonArrayToSlice(arr bson.A) []interface{} {
 	return out
 }
 
-// stringifyID converts a Mongo _id of any plausible type (string,
-// ObjectID, number, etc.) into its string form, so tag lookups work
-// regardless of how _id was stored on import. Returns "" if it can't
-// be reasonably stringified.
 func stringifyID(v interface{}) string {
 	switch val := v.(type) {
 	case string:

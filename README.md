@@ -1,27 +1,49 @@
 # MongoDB Viewer
 
-Dynamic table viewer for MongoDB. Select any collection from a dropdown, data loads 10 rows at a time.
-A lightweight full-stack app to browse MongoDB collections in a clean table UI with sorting, filtering, and Excel export.
+A lightweight full-stack application for viewing MongoDB collections in a dynamic table.
+
+The application automatically detects collection fields, supports server-side filtering, sorting, pagination, and Excel export without requiring a fixed schema.
+
+---
+
+## Features
+
+* View any collection in the database
+* Dynamic table columns
+* Server-side pagination (100 documents per request)
+* Device, tag, and time filters
+* Column search and sorting
+* Excel export
+* Automatic tag name mapping
+* Automatic device detection
+
+---
+
+## Tech Stack
+
+### Backend
+
+* Go
+* MongoDB
+
+### Frontend
+
+* React
+* Vite
 
 ---
 
 ## Setup
 
-### 1. Start MongoDB pointing at your data folder
-
-Open a terminal and run:
+### 1. Start MongoDB
 
 ```bash
-mongod --dbpath "C:\Users\hp\Desktop\theiox_data"
+mongod --dbpath "datapath"
 ```
-
-Keep this terminal open. MongoDB must be running for the backend to connect.
 
 ---
 
-### 2. Start the Go backend
-
-Open a second terminal:
+### 2. Start the Backend
 
 ```bash
 cd backend
@@ -29,7 +51,8 @@ go mod tidy
 go run main.go
 ```
 
-You should see:
+Expected output:
+
 ```
 Connected to MongoDB at mongodb://localhost:27017
 Server running at http://localhost:8080
@@ -37,9 +60,7 @@ Server running at http://localhost:8080
 
 ---
 
-### 3. Start the React frontend
-
-Open a third terminal:
+### 3. Start the Frontend
 
 ```bash
 cd frontend
@@ -47,73 +68,120 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser.
+Open:
+
+```
+http://localhost:5173
+```
 
 ---
 
-## How it works
-
-- Dropdown lists all collections in your `theiox_data` database
-- Selecting a collection fetches the first 10 documents
-- Scrolling to the bottom automatically fetches the next 10
-- Table columns are **dynamic** — built from whatever fields exist in the documents
-- `_id` (ObjectID) is converted to a readable hex string
-- Nested objects are shown as compact JSON
-- Booleans are colour-coded green/red
-
----
-
-## Project structure
+## Project Structure
 
 ```
 mongo-viewer/
 ├── backend/
-│   ├── main.go       ← Go HTTP server + MongoDB queries
+│   ├── main.go
 │   └── go.mod
+│
 └── frontend/
     ├── src/
-    │   ├── App.jsx   ← React table + dropdown + scroll logic
+    │   ├── App.jsx
     │   └── main.jsx
-    ├── index.html
     ├── package.json
     └── vite.config.js
 ```
 
 ---
 
-## Changing the database name
+## How It Works
 
-In `backend/main.go`, line:
+### Collection Selection
+
+The frontend loads all available MongoDB collections and displays them in a dropdown.
+
+When a collection is selected, the application clears previous data and starts loading the selected collection.
+
+---
+
+### Pagination
+
+Documents are loaded in batches of **100**.
+
+The backend returns:
+
+* documents
+* available columns
+* next skip value
+* `hasMore`
+
+If more data exists, the frontend automatically requests the next batch until all documents are loaded.
+
+---
+
+### Dynamic Columns
+
+MongoDB collections do not have a fixed schema.
+
+The backend collects all unique field names from the first batch and sends them to the frontend, allowing the table to adapt automatically to different collections.
+
+---
+
+### Filtering
+
+The application supports server-side filtering for:
+
+* Device
+* Tags
+* Time range
+
+These filters are applied in MongoDB, so only matching documents are returned.
+
+Each column also provides a search box for quick client-side filtering.
+
+---
+
+### Sorting
+
+Click any column header to sort the currently loaded data.
+
+Both numeric and text values are supported.
+
+---
+
+### Excel Export
+
+Once all documents are loaded, the current table can be exported as an Excel (`.xlsx`) file.
+
+---
+
+## API Endpoints
+
+| Endpoint           | Description                     |
+| ------------------ | ------------------------------- |
+| `/api/collections` | List all collections            |
+| `/api/items`       | Fetch paginated documents       |
+| `/api/tags`        | Get tag ID to name mapping      |
+| `/api/distinct`    | Get distinct values for a field |
+
+---
+
+## Configuration
+
+Change the database name in:
 
 ```go
 DB_NAME = "theiox_data"
 ```
 
-Change `theiox_data` to whatever your actual MongoDB database name is. If you're unsure, run:
+if your MongoDB database has a different name.
 
-```bash
-mongosh
-> show dbs
-```
-## How pagination works
- 
-Instead of `skip(n).limit(10)` (slow on large collections), the app uses **keyset pagination**:
- 
-- Every document in MongoDB has a built-in `_id` field (an ObjectID)
-- The first fetch has no cursor: `find({}).limit(10)`
-- Each response returns `nextCursor` = the `_id` of the last document
-- The next fetch uses: `find({ _id: { $gt: nextCursor } }).limit(10)`
-- This is O(log n) via index — stays fast regardless of collection size
-- Stops when the backend returns `hasMore: false`
 ---
- 
-## How dynamic columns work
- 
-MongoDB is schemaless so different documents can have different fields. The backend scans all returned documents, collects every unique key, and sends them as a `keys` array alongside the data. The frontend locks the column list after the very first batch and never changes it, so the table header stays stable as more rows load.
- 
----
- 
-## How the fetch loop works
- 
-Fetching is driven by a plain recursive async function and  not by `useEffect`. After each batch completes, if `hasMore` is true, `setTimeout(fetchBatch, 250)` schedules the next one. This avoids React's stale closure and re-render problems that arise when using `useEffect` as a fetch loop driver.
- 
+
+## Future Improvements
+
+* Full-text search
+* Column visibility controls
+* Configurable page size
+* Authentication
+* Virtual scrolling

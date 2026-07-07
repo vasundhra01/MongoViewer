@@ -3,12 +3,12 @@ import * as XLSX from "xlsx";
 
 const API = "http://localhost:8080";
 const CHUNK = 100;
-const MAX_BATCH_RETRIES = 2; // retries for a single slow/failed batch before surfacing an error
+const MAX_BATCH_RETRIES = 2; 
 const RETRY_BACKOFF_MS = 1000;
 
 function localDateTimeToUTCISO(value) {
   if (!value) return "";
-  const d = new Date(value); // "YYYY-MM-DDTHH:mm" is parsed as local time
+  const d = new Date(value); 
   if (isNaN(d.getTime())) return "";
   return d.toISOString();
 }
@@ -17,9 +17,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Generic multi-select combobox used for both the Device filter and the
-// Tag filter. Takes a plain { id, name } items array so it isn't coupled
-// to either shape of data.
 function MultiCombobox({ items, selectedIds, onChange, placeholder }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -188,9 +185,6 @@ export default function App() {
   const [filters, setFilters]         = useState({});
   const [page, setPage]               = useState(1);
   const [tagNames, setTagNames]       = useState({}); 
-
-  // Single set of selected tag ids (e.g. "tag_103"), sourced from the
-  // /api/tags dropdown below — replaces the old per-collection pill lists.
   const [selectedTagIds, setSelectedTagIds]     = useState(new Set());
   const [pendingFunctions, setPendingFunctions] = useState(new Set());
   const [appliedFunctions, setAppliedFunctions] = useState(new Set());
@@ -245,9 +239,6 @@ export default function App() {
 
       const { field, values } = deviceFilterRef.current;
       if (field && values && values.length) {
-        // Multiple device IDs are sent as a single comma-separated
-        // filterValue. The backend needs to split this and match with
-        // an $in query instead of a plain equality check.
         url += `&filterField=${encodeURIComponent(field)}&filterValue=${encodeURIComponent(values.join(","))}`;
       }
 
@@ -262,10 +253,6 @@ export default function App() {
       const res = await fetch(url);
       if (!res.ok) {
         const bodyText = await res.text();
-        // 502/503/504 (including our backend's "query timed out" 504) are
-        // usually transient — a retry with backoff often succeeds once
-        // Mongo's cache is warm or a load spike passes. 4xx errors are not
-        // retried since retrying won't change a bad request.
         const isRetryable = res.status >= 500 && attempt < MAX_BATCH_RETRIES;
         if (isRetryable) {
           loadingRef.current = false;
@@ -289,9 +276,6 @@ export default function App() {
         colsLockedRef.current = true;
       }
       skipRef.current = nextSkip;
-
-      // In preview mode: stop after first batch so the user sees a quick
-      // 100-row sample without waiting for the full collection to load.
       if (!more || previewRef.current) {
         doneRef.current = true;
         setDone(true);
@@ -321,7 +305,6 @@ export default function App() {
 
     runTokenRef.current += 1;
     const myToken = runTokenRef.current;
-
     setRows([]); setColumns([]); setFilters({}); setSort({ col: null, dir: "asc" });
     setError(""); setDone(false); setLoading(false); setPage(1);
     setSelectedTagIds(new Set());
@@ -369,10 +352,6 @@ export default function App() {
 
   const RAW_PREFIX = "raw_readings.";
   const TAG_FN_RE  = /^(tag_\d+)-(\w+)$/;
-
-  // Column that stores the device instance id — resolved once so both
-  // rendering and filtering/sorting can agree on which column to translate
-  // into a human-readable device name.
   const deviceCol = columns.find(c => c === "_id.device_instance_id")
     || columns.find(c => c.toLowerCase().includes("device"));
 
@@ -382,24 +361,16 @@ export default function App() {
     return map;
   })();
 
-  // Full tag list from /api/tags, turned into { id, name } items for the
-  // tag MultiCombobox — mirrors how `devices` feeds the device combobox.
   const tagsList = Object.entries(tagNames)
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  // First-3-letters abbreviation used for state/district/block in the
-  // hierarchy view. Falls back to "—" when the field is missing.
   const abbr = (s) => {
     const t = (s || "").trim();
     return t ? t.slice(0, 3).toUpperCase() : "—";
   };
 
   const hierarchyRows = (() => {
-    // Split into words so typing "Karnataka Kalaburagi" first narrows to
-    // the state, then further narrows to the district within it — each
-    // word must match somewhere (state, district, block, or device name),
-    // but different words can match different fields.
     const terms = hierarchySearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let list = devices;
     if (terms.length > 0) {
@@ -420,15 +391,9 @@ export default function App() {
     });
   })();
 
-  // Single source of truth for applying a device selection — used by both
-  // the toolbar combobox and the hierarchy modal so picking devices in
-  // either place updates the same filter and re-fetches consistently.
   const applyDeviceSelection = (ids) => {
     setSelectedDeviceIds(ids);
     if (!selected) return;
-
-    // Clearing both device and tag filters goes back to preview mode
-    // (first 100 rows only); having either set fetches the full matching set.
     previewRef.current = ids.size === 0 && selectedTagIds.size === 0;
     deviceFilterRef.current = ids.size
       ? { field: "_id.device_instance_id", values: Array.from(ids) }
@@ -436,10 +401,6 @@ export default function App() {
     restartFetch();
   };
 
-  // Builds the comma-separated backend field list for a set of selected
-  // tag ids. Tries both schema shapes this app encounters: raw_readings.<id>
-  // (raw_readings collections) and <id>-<fn> for every metric function
-  // currently visible in the loaded columns (tag-function collections).
   const computeTagFieldsString = (ids) => {
     const fields = [];
     ids.forEach(id => {
@@ -449,9 +410,6 @@ export default function App() {
     return fields.join(",");
   };
 
-  // Mirrors applyDeviceSelection for tags — fetched once from /api/tags via
-  // the combobox above, filters data as soon as a tag is picked instead of
-  // needing the separate per-collection pill rows this used to have.
   const applyTagSelection = (ids) => {
     setSelectedTagIds(ids);
     if (!selected) return;
@@ -479,10 +437,6 @@ export default function App() {
     applyDeviceSelection(next);
   };
 
-  // Resolves a cell's *display* value — translates the raw device id into
-  // its device name when the column is the device column, otherwise
-  // returns the raw value untouched. Used consistently for filtering,
-  // sorting, on-screen rendering, and Excel export so they never disagree.
   const getDisplayValue = (row, col) => {
     const raw = row[col];
     if (col === deviceCol && raw !== null && raw !== undefined) {
@@ -601,13 +555,6 @@ export default function App() {
   const totalPages = Math.max(1, Math.ceil(displayRows.length / CHUNK));
   const currentPage = Math.min(page, totalPages);
   const pageRows = displayRows.slice((currentPage - 1) * CHUNK, currentPage * CHUNK);
-
-  // Clamp `page` back into range when filtering/sorting shrinks the result
-  // set out from under the current page. This used to happen inline during
-  // render (setTimeout(() => setPage(currentPage), 0) called mid-render),
-  // which works by accident but triggers "Cannot update state during
-  // render" warnings and an extra unnecessary render. A useEffect keyed on
-  // the actual dependency is the correct place for this side effect.
   useEffect(() => {
     if (currentPage !== page) setPage(currentPage);
   }, [currentPage, page]);

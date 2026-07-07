@@ -6,10 +6,6 @@ const CHUNK = 100;
 const MAX_BATCH_RETRIES = 2; 
 const RETRY_BACKOFF_MS = 1000;
 
-// Collections that show the click-a-row-to-edit workflow. Kept as a Set so
-// it's a one-line change to enable editing on more collections later —
-// the update endpoint itself (POST /api/items/update) is already generic
-// across any collection with a string _id.
 const EDITABLE_COLLECTIONS = new Set(["gateway_instance"]);
 
 function localDateTimeToUTCISO(value) {

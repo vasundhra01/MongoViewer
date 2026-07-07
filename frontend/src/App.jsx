@@ -6,6 +6,12 @@ const CHUNK = 100;
 const MAX_BATCH_RETRIES = 2; // retries for a single slow/failed batch before surfacing an error
 const RETRY_BACKOFF_MS = 1000;
 
+// Collections that show the click-a-row-to-edit workflow. Kept as a Set so
+// it's a one-line change to enable editing on more collections later —
+// the update endpoint itself (POST /api/items/update) is already generic
+// across any collection with a string _id.
+const EDITABLE_COLLECTIONS = new Set(["gateway_instance"]);
+
 function localDateTimeToUTCISO(value) {
   if (!value) return "";
   const d = new Date(value); // "YYYY-MM-DDTHH:mm" is parsed as local time
@@ -203,6 +209,15 @@ export default function App() {
   const [showHierarchy, setShowHierarchy]         = useState(false);
   const [hierarchySearch, setHierarchySearch]     = useState("");
 
+  // ── Row edit modal state ──
+  // editingRow holds the *original* row (as last received from the
+  // server) so we can diff against it when saving; editFormData holds the
+  // live, user-edited values shown in the form fields.
+  const [editingRow, setEditingRow]   = useState(null);
+  const [editFormData, setEditFormData] = useState({});
+  const [editSaving, setEditSaving]   = useState(false);
+  const [editError, setEditError]     = useState("");
+
   const skipRef         = useRef(0);
   const colsLockedRef   = useRef(false);
   const doneRef         = useRef(false);
@@ -217,7 +232,7 @@ export default function App() {
   useEffect(() => {
     fetch(`${API}/api/collections`)
       .then(r => r.json())
-      .then(d => setCollections(d.collections || []))
+      .then(d => setCollections((d.collections || []).slice().sort((a, b) => a.localeCompare(b))))
       .catch(() => setError("Cannot reach backend. Is Go server running on :8080?"));
 
     fetch(`${API}/api/tags`)
@@ -328,6 +343,7 @@ export default function App() {
     setPendingFunctions(new Set()); setAppliedFunctions(new Set());
     setPendingFrom(""); setPendingTo(""); setAppliedFrom(""); setAppliedTo("");
     setTimeCol("");
+    closeEditModal();
 
     skipRef.current        = 0;
     colsLockedRef.current  = false;
@@ -632,6 +648,81 @@ export default function App() {
     return String(val);
   };
 
+  // ── Row edit modal ──
+  const isEditableCollection = EDITABLE_COLLECTIONS.has(selected);
+
+  function openEditModal(row) {
+    setEditingRow(row);
+    setEditFormData({ ...row });
+    setEditError("");
+  }
+
+  function closeEditModal() {
+    setEditingRow(null);
+    setEditFormData({});
+    setEditError("");
+    setEditSaving(false);
+  }
+
+  function handleEditFieldChange(col, value) {
+    setEditFormData(prev => ({ ...prev, [col]: value }));
+  }
+
+  async function handleSaveEdit() {
+    if (!editingRow) return;
+    setEditError("");
+
+    // Diff the form against the original row so we only send fields that
+    // actually changed. Object/array fields are edited as JSON text in the
+    // textarea, so those get parsed back before comparing/sending.
+    const updates = {};
+    for (const col of columns) {
+      if (col === "_id") continue;
+      const original = editingRow[col];
+      const isObjectField = original !== null && typeof original === "object";
+      let newVal = editFormData[col];
+
+      if (isObjectField && typeof newVal === "string") {
+        try {
+          newVal = JSON.parse(newVal);
+        } catch (e) {
+          setEditError(`"${colLabel(col)}" is not valid JSON: ${e.message}`);
+          return;
+        }
+      }
+
+      if (JSON.stringify(newVal) !== JSON.stringify(original)) {
+        updates[col] = newVal;
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      closeEditModal();
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      const res = await fetch(`${API}/api/items/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collection: selected, id: editingRow._id, updates }),
+      });
+      if (!res.ok) {
+        const bodyText = await res.text();
+        throw new Error(`Server returned ${res.status}: ${bodyText}`);
+      }
+
+      // Reflect the change locally so the table updates without a refetch.
+      setRows(prev => prev.map(r => (r._id === editingRow._id ? { ...r, ...updates } : r)));
+      closeEditModal();
+    } catch (e) {
+      setEditError("Save failed: " + e.message);
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 1200, margin: "0 auto", padding: "32px 24px" }}>
 
@@ -687,6 +778,12 @@ export default function App() {
         {(rows.length > 0 || loading) && (
           <span style={{ fontSize: 12, color: "#888" }}>
             {loading ? `Loading… (${rows.length} rows)` : `${rows.length} rows · showing ${displayRows.length}`}
+          </span>
+        )}
+
+        {isEditableCollection && rows.length > 0 && (
+          <span style={{ fontSize: 12, color: "#7F77DD" }}>
+            Click a row to edit it
           </span>
         )}
 
@@ -836,8 +933,10 @@ export default function App() {
             <tbody>
               {pageRows.map((row, i) => (
                 <tr key={(currentPage - 1) * CHUNK + i}
-                  style={{ borderTop: "1px solid #f0f0f0" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
+                  style={{ borderTop: "1px solid #f0f0f0", cursor: isEditableCollection ? "pointer" : "default" }}
+                  onClick={() => isEditableCollection && openEditModal(row)}
+                  title={isEditableCollection ? "Click to edit this row" : undefined}
+                  onMouseEnter={e => e.currentTarget.style.background = isEditableCollection ? "#f8f7ff" : "#fafafa"}
                   onMouseLeave={e => e.currentTarget.style.background = ""}
                 >
                   <td style={{ ...tdStyle, color: "#bbb", userSelect: "none" }}>{(currentPage - 1) * CHUNK + i + 1}</td>
@@ -1033,6 +1132,120 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ── Row edit modal ── */}
+      {editingRow && (
+        <div
+          onClick={() => !editSaving && closeEditModal()}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)",
+            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: "#fff", borderRadius: 12, width: 560, maxWidth: "90vw",
+              maxHeight: "82vh", display: "flex", flexDirection: "column",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+            }}
+          >
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid #eee", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>Edit document</div>
+                <div style={{ fontSize: 12, color: "#999", marginTop: 2, fontFamily: "monospace" }}>{editingRow._id}</div>
+              </div>
+              <button
+                onClick={() => !editSaving && closeEditModal()}
+                style={{ border: "none", background: "transparent", fontSize: 20, cursor: "pointer", color: "#999", lineHeight: 1 }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ overflowY: "auto", padding: "16px 20px" }}>
+              {columns.map(col => {
+                if (col === "_id") {
+                  return (
+                    <div key={col} style={{ marginBottom: 14 }}>
+                      <label style={editFieldLabelStyle}>{colLabel(col)}</label>
+                      <div style={{ fontSize: 13, color: "#888", padding: "7px 10px", background: "#f5f5f5", borderRadius: 6, fontFamily: "monospace" }}>
+                        {String(editingRow[col])}
+                      </div>
+                    </div>
+                  );
+                }
+
+                const original = editingRow[col];
+                const val = editFormData[col];
+                const isObjectField = original !== null && typeof original === "object";
+                const isBoolField = typeof original === "boolean";
+                const isNumberField = typeof original === "number";
+
+                return (
+                  <div key={col} style={{ marginBottom: 14 }}>
+                    <label style={editFieldLabelStyle}>{colLabel(col)}</label>
+                    {isObjectField ? (
+                      <textarea
+                        value={typeof val === "string" ? val : JSON.stringify(val, null, 2)}
+                        onChange={e => handleEditFieldChange(col, e.target.value)}
+                        rows={Math.min(8, Math.max(3, (typeof val === "string" ? val : JSON.stringify(val, null, 2)).split("\n").length))}
+                        style={editTextareaStyle}
+                      />
+                    ) : isBoolField ? (
+                      <select
+                        value={String(val)}
+                        onChange={e => handleEditFieldChange(col, e.target.value === "true")}
+                        style={editInputStyle}
+                      >
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    ) : isNumberField ? (
+                      <input
+                        type="number"
+                        value={val ?? ""}
+                        onChange={e => handleEditFieldChange(col, e.target.value === "" ? "" : Number(e.target.value))}
+                        style={editInputStyle}
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={val ?? ""}
+                        onChange={e => handleEditFieldChange(col, e.target.value)}
+                        style={editInputStyle}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {editError && (
+              <div style={{ margin: "0 20px 12px", background: "#fff0f0", border: "1px solid #fcc", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#b00" }}>
+                {editError}
+              </div>
+            )}
+
+            <div style={{ padding: "12px 20px", borderTop: "1px solid #f0f0f0", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                onClick={() => !editSaving && closeEditModal()}
+                disabled={editSaving}
+                style={{ fontSize: 12, padding: "7px 16px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", color: "#555", cursor: editSaving ? "default" : "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={editSaving}
+                style={{ fontSize: 12, padding: "7px 18px", borderRadius: 6, border: "none", background: editSaving ? "#b5b0f0" : "#7F77DD", color: "#fff", fontWeight: 600, cursor: editSaving ? "default" : "pointer" }}
+              >
+                {editSaving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1054,6 +1267,21 @@ const hierarchyBadgeStyle = {
 const filterLabelStyle = {
   fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase",
   letterSpacing: "0.04em", paddingTop: 5, minWidth: 52,
+};
+
+const editFieldLabelStyle = {
+  display: "block", fontSize: 11, fontWeight: 700, color: "#888",
+  textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5,
+};
+
+const editInputStyle = {
+  width: "100%", padding: "7px 10px", fontSize: 13, borderRadius: 6,
+  border: "1px solid #ddd", boxSizing: "border-box", outline: "none",
+};
+
+const editTextareaStyle = {
+  width: "100%", padding: "8px 10px", fontSize: 12, fontFamily: "monospace",
+  borderRadius: 6, border: "1px solid #ddd", boxSizing: "border-box", outline: "none", resize: "vertical",
 };
 
 const pillStyle = (active) => ({

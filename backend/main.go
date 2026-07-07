@@ -41,6 +41,7 @@ const (
 	ITEMS_QUERY_TIMEOUT      = 30 * time.Second
 	METADATA_QUERY_TIMEOUT   = 20 * time.Second
 	COLLECTIONS_LIST_TIMEOUT = 10 * time.Second
+	UPDATE_QUERY_TIMEOUT     = 15 * time.Second
 )
 
 var client *mongo.Client // single mongo connection shared by all
@@ -86,6 +87,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/collections", withCORS(handleCollections))
 	mux.HandleFunc("/api/items", withCORS(handleItems))
+	mux.HandleFunc("/api/items/update", withCORS(handleUpdateItem))
 	mux.HandleFunc("/api/tags", withCORS(handleTags))
 	mux.HandleFunc("/api/distinct", withCORS(handleDistinct))
 	mux.HandleFunc("/api/devices", withCORS(handleDevices))
@@ -119,6 +121,7 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 		writeMongoError(w, "failed to list collections", err)
 		return
 	}
+	sort.Strings(names)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -429,6 +432,118 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// updateRequest is the body accepted by POST /api/items/update.
+//
+//	{
+//	  "collection": "gateway_instance",
+//	  "id": "gateway_instance_10001_0a:74:6a:85:7e:59",
+//	  "updates": { "gatewayname": "New name", "status_timeout": 15, ... }
+//	}
+//
+// "id" is matched against the document's _id as a plain string (this
+// database's _id values are custom compound strings, not ObjectIDs — see
+// the note on handleItems above), and "updates" is applied as a partial
+// $set, so fields the client doesn't send are left untouched.
+type updateRequest struct {
+	Collection string                 `json:"collection"`
+	ID         string                 `json:"id"`
+	Updates    map[string]interface{} `json:"updates"`
+}
+
+// normalizeJSONNumber converts the float64 that encoding/json produces for
+// every JSON number into an int64 when the value is a whole number. Without
+// this, editing an integer field like status_timeout (10) through the form
+// and saving it unchanged would silently rewrite it in Mongo as a double
+// (10.0) instead of leaving its original int type alone.
+func normalizeJSONNumber(v interface{}) interface{} {
+	switch val := v.(type) {
+	case float64:
+		if val == math.Trunc(val) && !math.IsInf(val, 0) {
+			return int64(val)
+		}
+		return val
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, nv := range val {
+			out[k] = normalizeJSONNumber(nv)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, nv := range val {
+			out[i] = normalizeJSONNumber(nv)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// POST /api/items/update
+// Applies a partial update (Mongo $set) to a single document, matched by
+// its _id, in the given collection. Used by the frontend's row-click edit
+// form — currently only wired up for the gateway_instance collection, but
+// this endpoint itself is generic across any collection with a string _id.
+func handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "method not allowed, use POST", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body updateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Collection == "" {
+		http.Error(w, "collection is required", http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if len(body.Updates) == 0 {
+		http.Error(w, "updates must contain at least one field", http.StatusBadRequest)
+		return
+	}
+
+	// Never let a stray "_id" key in the updates payload attempt to
+	// rewrite the document's identity — _id is immutable in Mongo and the
+	// form always treats it as read-only, but strip it defensively too.
+	delete(body.Updates, "_id")
+	if len(body.Updates) == 0 {
+		http.Error(w, "updates must contain at least one editable field", http.StatusBadRequest)
+		return
+	}
+
+	setDoc := bson.M{}
+	for k, v := range body.Updates {
+		setDoc[k] = normalizeJSONNumber(v)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), UPDATE_QUERY_TIMEOUT)
+	defer cancel()
+
+	coll := client.Database(DB_NAME).Collection(body.Collection)
+	res, err := coll.UpdateOne(ctx, bson.M{"_id": body.ID}, bson.M{"$set": setDoc})
+	if err != nil {
+		writeMongoError(w, "update error", err)
+		return
+	}
+	if res.MatchedCount == 0 {
+		http.Error(w, fmt.Sprintf("no document found in %q with _id %q", body.Collection, body.ID), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":       true,
+		"matchedCount":  res.MatchedCount,
+		"modifiedCount": res.ModifiedCount,
+	})
+}
+
 // buildEqualityFilter matches a field against one or more comma-separated
 // values (used for multi-select filters like "device A,device B"), trying
 // int/float/bool coercions for each so it works regardless of how the
@@ -638,7 +753,7 @@ func stringifyID(v interface{}) string {
 func withCORS(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

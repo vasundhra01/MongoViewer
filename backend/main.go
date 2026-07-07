@@ -29,11 +29,9 @@ const (
 	UPDATE_QUERY_TIMEOUT     = 15 * time.Second
 )
 
-var client *mongo.Client // single mongo connection shared by all
+var client *mongo.Client
 
 func main() {
-	// Connect with short timeouts — mongo.Connect is non-blocking; the actual
-	// TCP handshake happens lazily on the first real operation.
 	clientOpts := options.Client().
 		ApplyURI(MONGO_URI).
 		SetConnectTimeout(10 * time.Second).
@@ -48,9 +46,6 @@ func main() {
 		log.Fatal("MongoDB connect error:", err)
 	}
 	defer client.Disconnect(context.Background())
-
-	// Ping in background — don't block server startup waiting for Mongo. This was changed because server was taking a lot of time to start
-	// The HTTP server is accepting connections in milliseconds regardless.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

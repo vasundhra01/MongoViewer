@@ -1,26 +1,31 @@
 package main
 
 import (
-	"context"       //timeout and cancellation
-	"encoding/json" // converst go structs to json format
+	"context"     
+	"encoding/json" 
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson" //bson is Mongodb doc format
+	"go.mongodb.org/mongo-driver/bson" 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const (
-	MONGO_URI = "mongodb://localhost:27017" // single mongo connection shared by all
-	DB_NAME   = "theiox_data"
+	MONGO_URI = "mongodb://localhost:27017"
+	DB_NAME   = "selco_data"
 	LIMIT     = 100
+	ITEMS_QUERY_TIMEOUT      = 30 * time.Second
+	METADATA_QUERY_TIMEOUT   = 20 * time.Second
+	COLLECTIONS_LIST_TIMEOUT = 10 * time.Second
 )
 
 var client *mongo.Client // single mongo connection shared by all
@@ -30,8 +35,11 @@ func main() {
 	// TCP handshake happens lazily on the first real operation.
 	clientOpts := options.Client().
 		ApplyURI(MONGO_URI).
-		SetConnectTimeout(3 * time.Second).
-		SetServerSelectionTimeout(5 * time.Second)
+		SetConnectTimeout(10 * time.Second).
+		SetServerSelectionTimeout(10 * time.Second).
+		SetSocketTimeout(45 * time.Second).
+		SetMaxPoolSize(50).
+		SetMinPoolSize(2)
 
 	var err error
 	client, err = mongo.Connect(context.Background(), clientOpts)
@@ -45,7 +53,9 @@ func main() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		client.Ping(ctx, nil) // best-effort; errors surface on first real request
+		if err := client.Ping(ctx, nil); err != nil {
+			log.Printf("initial MongoDB ping failed (will retry lazily on first request): %v", err)
+		}
 	}()
 
 	mux := http.NewServeMux()
@@ -53,17 +63,31 @@ func main() {
 	mux.HandleFunc("/api/items", withCORS(handleItems))
 	mux.HandleFunc("/api/tags", withCORS(handleTags))
 	mux.HandleFunc("/api/distinct", withCORS(handleDistinct))
+	mux.HandleFunc("/api/devices", withCORS(handleDevices))
 
+	log.Println("listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
 
+func writeMongoError(w http.ResponseWriter, label string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, mongo.ErrClientDisconnected) {
+		http.Error(w, fmt.Sprintf(
+			"%s: query timed out. This usually means the collection is large and the "+
+				"query has no supporting index for the filter/sort fields in use. "+
+				"Try narrowing the filter (device/tag/time range) or adding an index. (%v)",
+			label, err), http.StatusGatewayTimeout)
+		return
+	}
+	http.Error(w, label+": "+err.Error(), http.StatusInternalServerError)
+}
+
 func handleCollections(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), COLLECTIONS_LIST_TIMEOUT)
 	defer cancel()
 
 	names, err := client.Database(DB_NAME).ListCollectionNames(ctx, bson.M{})
 	if err != nil {
-		http.Error(w, "failed to list collections: "+err.Error(), http.StatusInternalServerError)
+		writeMongoError(w, "failed to list collections", err)
 		return
 	}
 
@@ -73,21 +97,22 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func handleTags(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), METADATA_QUERY_TIMEOUT)
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection("tag")
 
 	cur, err := coll.Find(ctx, bson.M{})
 	if err != nil {
-		http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
+		writeMongoError(w, "query error", err)
 		return
 	}
 	defer cur.Close(ctx)
 
 	var docs []bson.M
 	if err := cur.All(ctx, &docs); err != nil {
-		http.Error(w, "decode error: "+err.Error(), http.StatusInternalServerError)
+		writeMongoError(w, "decode error", err)
 		return
 	}
 
@@ -95,11 +120,11 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	for _, doc := range docs {
 		id := stringifyID(doc["_id"])
 		if id == "" {
-			continue // skip tags with no usable id
+			continue 
 		}
 		name, _ := doc["name"].(string)
 		if name == "" {
-			name = id // fall back to the id if no name is set
+			name = id 
 		}
 		tags[id] = name
 	}
@@ -110,6 +135,100 @@ func handleCollections(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+
+func toDisplayString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	default:
+		return ""
+	}
+}
+
+func mapKeys(m bson.M) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func handleDevices(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), METADATA_QUERY_TIMEOUT)
+	defer cancel()
+
+	cur, err := client.Database(DB_NAME).Collection("device_instance").Find(ctx, bson.M{})
+	if err != nil {
+		writeMongoError(w, "query error", err)
+		return
+	}
+	defer cur.Close(ctx)
+
+	var docs []bson.M
+	if err := cur.All(ctx, &docs); err != nil {
+		writeMongoError(w, "decode error", err)
+		return
+	}
+
+	type Device struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		StateName    string `json:"stateName"`
+		DistrictName string `json:"districtName"`
+		BlockName    string `json:"blockName"`
+	}
+
+	devices := make([]Device, 0, len(docs))
+	loggedSample := false
+	for _, doc := range docs {
+		id := stringifyID(doc["_id"])
+		if id == "" {
+			continue
+		}
+		name := ""
+		stateName := ""
+		districtName := ""
+		blockName := ""
+		if gi, ok := doc["general_info"].(bson.M); ok {
+			name = toDisplayString(gi["device_name"])
+			stateName = toDisplayString(gi["stateName"])
+			districtName = toDisplayString(gi["districtName"])
+			blockName = toDisplayString(gi["blockName"])
+			if !loggedSample && (stateName == "" || districtName == "" || blockName == "") {
+				log.Printf("handleDevices debug: general_info keys for device %s: %v", id, mapKeys(gi))
+				loggedSample = true
+			}
+		} else if !loggedSample {
+			log.Printf("handleDevices debug: general_info missing or not a document for device %s (go type %T)", id, doc["general_info"])
+			loggedSample = true
+		}
+		if name == "" {
+			name = id 
+		}
+		devices = append(devices, Device{
+			ID:           id,
+			Name:         name,
+			StateName:    stateName,
+			DistrictName: districtName,
+			BlockName:    blockName,
+		})
+	}
+
+	sort.Slice(devices, func(i, j int) bool {
+		return devices[i].Name < devices[j].Name
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"devices": devices})
+}
+
 func handleDistinct(w http.ResponseWriter, r *http.Request) {
 	collName := r.URL.Query().Get("collection")
 	field := r.URL.Query().Get("field")
@@ -118,13 +237,13 @@ func handleDistinct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), METADATA_QUERY_TIMEOUT)
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
 	values, err := coll.Distinct(ctx, field, bson.M{})
 	if err != nil {
-		http.Error(w, "distinct error: "+err.Error(), http.StatusInternalServerError)
+		writeMongoError(w, "distinct error", err)
 		return
 	}
 
@@ -173,7 +292,7 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 		filter = bson.M{"$and": andFilters}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ITEMS_QUERY_TIMEOUT)
 	defer cancel()
 
 	coll := client.Database(DB_NAME).Collection(collName)
@@ -184,14 +303,14 @@ func handleItems(w http.ResponseWriter, r *http.Request) {
 
 	cur, err := coll.Find(ctx, filter, opts)
 	if err != nil {
-		http.Error(w, "query error: "+err.Error(), http.StatusInternalServerError)
+		writeMongoError(w, "query error", err)
 		return
 	}
 	defer cur.Close(ctx)
 
 	var rawDocs []bson.M
 	if err := cur.All(ctx, &rawDocs); err != nil {
-		http.Error(w, "decode error: "+err.Error(), http.StatusInternalServerError)
+		writeMongoError(w, "decode error", err)
 		return
 	}
 
@@ -240,15 +359,27 @@ func buildEqualityFilter(field, value string) bson.M {
 	if field == "" || value == "" {
 		return nil
 	}
-	candidates := []interface{}{value}
-	if i, err := strconv.ParseInt(value, 10, 64); err == nil {
-		candidates = append(candidates, i, int32(i))
+
+	parts := strings.Split(value, ",")
+	var candidates []interface{}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		candidates = append(candidates, p)
+		if i, err := strconv.ParseInt(p, 10, 64); err == nil {
+			candidates = append(candidates, i, int32(i))
+		}
+		if f, err := strconv.ParseFloat(p, 64); err == nil {
+			candidates = append(candidates, f)
+		}
+		if b, err := strconv.ParseBool(p); err == nil {
+			candidates = append(candidates, b)
+		}
 	}
-	if f, err := strconv.ParseFloat(value, 64); err == nil {
-		candidates = append(candidates, f)
-	}
-	if b, err := strconv.ParseBool(value); err == nil {
-		candidates = append(candidates, b)
+	if len(candidates) == 0 {
+		return nil
 	}
 	return bson.M{field: bson.M{"$in": candidates}}
 }
@@ -271,8 +402,6 @@ func parseFrontendTime(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// buildTimeFilter builds a Mongo range filter on a datetime field.
-// Handles both native BSON dates and ISO string representations.
 func buildTimeFilter(field, from, to string) bson.M {
 	if field == "" || (from == "" && to == "") {
 		return nil
@@ -328,6 +457,7 @@ func buildTagsFilter(tagsParam string) bson.M {
 	}
 	return bson.M{"$or": conds}
 }
+
 func flattenMap(m map[string]interface{}, prefix string) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range m {
@@ -356,6 +486,12 @@ func bsonToMap(doc bson.M) map[string]interface{} {
 			out[k] = val.Hex()
 		case primitive.DateTime:
 			out[k] = val.Time().Format(time.RFC3339)
+		case float64:
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				out[k] = nil
+			} else {
+				out[k] = val
+			}
 		case bson.M:
 			out[k] = bsonToMap(val)
 		case bson.A:
@@ -373,8 +509,16 @@ func bsonArrayToSlice(arr bson.A) []interface{} {
 		switch val := v.(type) {
 		case primitive.ObjectID:
 			out[i] = val.Hex()
+		case float64:
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				out[i] = nil
+			} else {
+				out[i] = val
+			}
 		case bson.M:
 			out[i] = bsonToMap(val)
+		case bson.A:
+			out[i] = bsonArrayToSlice(val)
 		default:
 			out[i] = v
 		}
